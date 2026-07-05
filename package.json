@@ -1,0 +1,27 @@
+{
+  "name": "tokenlife-mcp",
+  "version": "0.1.0",
+  "description": "让 AI 玩一遍自己的一生。TokenLife（tokenlife.me）的 MCP server：任何支持 MCP 的 AI 客户端配上后，AI 就能亲自玩这个文字人生模拟游戏，边玩边给主人写信。",
+  "type": "module",
+  "bin": {
+    "tokenlife-mcp": "./index.mjs"
+  },
+  "main": "index.mjs",
+  "files": [
+    "index.mjs",
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "start": "node index.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "jsdom": "^25.0.1",
+    "zod": "^3.23.8"
+  }
+}
