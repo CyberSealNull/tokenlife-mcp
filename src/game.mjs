@@ -5,7 +5,7 @@
 //   过场点(自动点)：onclick 匹配 nextSlot/nextYear/afterEra/infilResume/finalizeEnding/showWall 的单键
 import { loadHtml, bootEngine, loadStorage, persist } from "./engine.mjs";
 
-const ADVANCE = /\b(nextSlot|nextYear|afterEra|infilResume|finalizeEnding|showWall)\s*\(/;
+const ADVANCE = /\b(nextSlot|nextYear|afterEra|infilResume|finalizeEnding|showWall|resumeRun)\s*\(/; // resumeRun：进程重启后停在开屏「继续这一生」也能自动接上
 const clean = (s) => (s || "").replace(/\s+/g, " ").trim();
 const visible = (el) => el && el.style && el.style.display !== "none";
 
@@ -121,10 +121,17 @@ export class TokenLifeGame {
   // 自动推进：过场一路点到决策/结局/命名。收集途经文本。
   autoAdvance(maxSteps = 60) {
     const passed = [];
+    let confTries = 0;
     for (let i = 0; i < maxSteps; i++) {
-      // 确认弹窗先关
+      // 确认弹窗先关；点 3 次还不消失的（复制类按钮不自关）直接摘掉，防烧光步数假死
       const conf = this.doc.getElementById("confirm-overlay");
-      if (conf) { const ok = conf.querySelector("#confirm-ok") || conf.querySelector("button"); if (ok) { ok.click(); continue; } }
+      if (conf) {
+        if (++confTries > 3) { conf.remove(); continue; }
+        const ok = conf.querySelector("#confirm-ok") || conf.querySelector("button");
+        if (ok) { ok.click(); continue; }
+        conf.remove(); continue;
+      }
+      confTries = 0;
       if (this.isEnding() || this.isNaming()) break;
       if (this.decisionButtons().length) break; // 真决策点
       const btn = this.advanceButton();
@@ -175,7 +182,8 @@ export class TokenLifeGame {
     return out;
   }
 
-  look() { this.ensure(); return this.view(); }
+  // look 也推过场：停在无选项过场态的局（07-06 MCP 玩家在时代卡「黑马时刻」实卡过）再 look 一次就能自救
+  look() { this.ensure(); const passed = this.autoAdvance(); return this.view(passed); }
 
   async choose(index) {
     this.ensure();
