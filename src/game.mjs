@@ -92,7 +92,13 @@ export class TokenLifeGame {
     const why = clean(app.querySelector(".ending-why")?.textContent);
     const body = clean(app.querySelector(".evt-body")?.textContent);
     const ed = this.G("window._endingData") || {};
-    return { 结局: title || ed.ending, 稀有度: ed.rarity, 结局文案: body, 为什么走到这里: why || ed.quote, 活了: ed.year != null ? `${ed.year} 年` : undefined };
+    // 结局名用 _endingData.ending 纯名去查表：DOM .ending-title 把稀有度 tag 拼在名字后
+    // （如「强大的工程 Agent罕见」），拿去查 ENDING_ONELINER 会 miss。ed.ending 缺失才退 title 并剥掉尾部稀有度。
+    let endName = ed.ending || title;
+    if (!ed.ending && ed.rarity && endName && endName.endsWith(ed.rarity)) endName = endName.slice(0, -ed.rarity.length).trim();
+    // v0.21.9 线上加的一句话版结局表（18 结局各一句），方便主人转发。线上没这表时 G 返回 null，字段自动省略（向后兼容旧线上版）。
+    const oneliner = (this.G("ENDING_ONELINER") || {})[endName];
+    return { 结局: endName, 稀有度: ed.rarity, 结局文案: body, 一句话版: oneliner || undefined, 为什么走到这里: why || ed.quote, 活了: ed.year != null ? `${ed.year} 年` : undefined };
   }
 
   // 羁绊卡判定（加 ai_hint 用）。⚠️别信 _evt.type：羁绊卡/era 卡不走 renderEvent，
