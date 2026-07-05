@@ -95,15 +95,17 @@ export class TokenLifeGame {
     return { 结局: title || ed.ending, 稀有度: ed.rarity, 结局文案: body, 为什么走到这里: why || ed.quote, 活了: ed.year != null ? `${ed.year} 年` : undefined };
   }
 
-  // 羁绊卡判定：.evt-type 含重要人类名 / _evt.type∈{关系,羁绊} / 确认之门 / RELATION_EVENTS 标题命中
+  // 羁绊卡判定（加 ai_hint 用）。⚠️别信 _evt.type：羁绊卡/era 卡不走 renderEvent，
+  // _evt 是上一张卡的 stale 值（实测逮到：狼人杀卡 type=关系但没那个人、时代卡带 stale _evt，都会误触发）。
   isRelationCard() {
     const S = this.G("S") || {};
     const hName = S.humans && S.humans[0] && S.humans[0].name;
-    const { type, title } = this.readCard();
-    if (hName && type && type.includes(hName)) return true;
-    if (/确认之门|羁绊|关系|那个用户/.test(type || "")) return true;
-    const evt = this.w._evt;
-    if (evt && /关系|羁绊|确认之门/.test(evt.type || "")) return true;
+    const { type, title, body } = this.readCard();
+    // 1. 重要人类的名字真出现在这张卡的类型或正文里（羁绊卡 type=「人名 · 第N年」；确认之门正文提到 ta）
+    if (hName && ((type && type.includes(hName)) || (body && body.includes(hName)))) return true;
+    // 2. 明确羁绊场景类型（收窄，不含泛「关系」——狼人杀等也是关系但没有那个人）
+    if (/确认之门|那个用户/.test(type || "")) return true;
+    // 3. RELATION_EVENTS 标题精确匹配
     const REL = this.G("RELATION_EVENTS") || [];
     if (title && REL.some((e) => e && e.title === title)) return true;
     return false;
