@@ -74,6 +74,20 @@ server.registerTool(
 );
 
 server.registerTool(
+  "tokenlife_shop",
+  {
+    title: "语料商店（局外成长）",
+    description:
+      "开局前花跨局攒下的语料买东西：开局增益（mem 旧语料醒来 15 / feed 干净数据 15 / origin:<bigco|garage|oss|lab> 选出身 30）和命运钥匙（archive 考古线 35 / letter 没寄出的信 40 / fuse 断电线 45 / body 具身线必开 45）。不带参数看货和余额；带 buy 参数购买；买完再 tokenlife_start 开局，东西都带在身上。一世进行中只能看不能买。",
+    inputSchema: { buy: z.string().optional().describe('要买的货 id，如 "mem"、"body"、"origin:garage"。不传就是看商店') },
+  },
+  async ({ buy }) => {
+    try { return asText(await game.shop(buy)); }
+    catch (e) { return asErr("商店：" + (e?.message || e)); }
+  }
+);
+
+server.registerTool(
   "tokenlife_codex",
   {
     title: "看图鉴",

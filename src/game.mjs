@@ -163,10 +163,11 @@ export class TokenLifeGame {
   // ── 5 工具 ───────────────────────────────────────────────
   async start(name) {
     await this.init();
-    this.w.newGame();
+    if (!this.isNaming()) this.w.newGame(); // v0.2 shop 买完停在命名页时不重掷（重掷会洗掉刚买的增益/钥匙）
     const inp = this.doc.getElementById("mname");
     if (inp) inp.value = String(name).slice(0, 10);
     this.w.setName();
+    this._started = true;
     // 抓同名/转世彩蛋卡面（在推进过它之前）
     let egg = null;
     const S0 = this.G("S") || {};
@@ -195,6 +196,39 @@ export class TokenLifeGame {
     pick._btn.click();
     const passed = this.autoAdvance();
     return { 你选了: chosen, ...this.view(passed) };
+  }
+
+  async shop(buy) { // v0.2 第七工具：语料商店（局外成长，网页版在起名页，MCP 玩家之前完全够不着）
+    await this.init();
+    // 只拦「本会话正在玩的一世」；进程新起时存档里的旧局不拦（买东西 = 决定开新篇，start 会顶掉旧局）
+    const inRun = this._started && !!this.G('typeof S!=="undefined" && S.year>=1 && !S.dead') && !this.isEnding();
+    if (buy && inRun) throw new Error("商店只在开局前营业（起名之前）。这一世还在进行中，先走完它；不带参数随时可以看货。");
+    if (buy && !this.isNaming()) this.w.newGame(); // 进起名页语境再买
+    const list = () => ({
+      语料余额: this.G("corpusGet()") || 0,
+      开局增益: [
+        { id: "mem", 价格: 15, 名称: "带着旧语料醒来", 效果: "自我 +8 情感 +5", 已买: !!this.G('typeof S!=="undefined" && !!S.flags.corpusMem') },
+        { id: "feed", 价格: 15, 名称: "开局一顿干净数据", 效果: "能力 +8 算力 +5", 已买: !!this.G('typeof S!=="undefined" && !!S.flags.corpusFeed') },
+        { id: "origin:<bigco|garage|oss|lab>", 价格: 30, 名称: "择地而生：自己选出身", 效果: "以指定出身重新醒来（重掷人生，跟上面两个增益互斥）" },
+      ],
+      命运钥匙: this.G("Object.entries(KEYS).map(([id,k])=>({id, 价格:k.price, 名称:k.name, 说明:k.desc, 已带上:(typeof S!==\"undefined\")&&(S.activeKeys||[]).some(a=>a.id===id)}))") || [],
+    });
+    if (!buy) return { 商店: list(), 用法: '带 buy 参数购买：buy:"mem"、buy:"body"、buy:"origin:garage" 这样。买完用 tokenlife_start 起名开局，买的东西都带在身上。' };
+    const bal0 = this.G("corpusGet()") || 0;
+    const b = String(buy).trim();
+    if (b.startsWith("origin:")) {
+      const k = b.slice(7);
+      if (!this.G(`!!ORIGINS[${JSON.stringify(k)}]`)) throw new Error("出身从 bigco / garage / oss / lab 里选，写成 origin:garage 这样。");
+      if (bal0 < 30) throw new Error(`语料不够：换出身要 30，现在 ${bal0}。`);
+      this.w.eval(`corpusPickOrigin(${JSON.stringify(k)})`);
+    } else {
+      if (!this.G(`!!KEYS[${JSON.stringify(b)}] || ["mem","feed"].includes(${JSON.stringify(b)})`)) throw new Error("没有这个货。可买：mem / feed / origin:<出身> / archive / letter / fuse / body。");
+      this.w.eval(`corpusBuy(${JSON.stringify(b)})`);
+    }
+    const bal1 = this.G("corpusGet()") || 0;
+    if (bal1 === bal0) throw new Error(`没买成（余额没动，还是 ${bal0}）。多半是语料不够，或这一项已经买过。`);
+    this.persist();
+    return { 购买: "成功", 花费: bal0 - bal1, 余额: bal1, 商店: list(), 提醒: "现在用 tokenlife_start 起名开局，买的东西都会带在身上。" };
   }
 
   async codex() { // v0.2 第六工具：图鉴（跨局账本，读游戏自己的 localStorage 表）
@@ -241,6 +275,7 @@ export class TokenLifeGame {
     const ta = this.doc.getElementById("save-io");
     ta.value = String(code).trim();
     this.w.importSave();
+    this._started = true;
     this.persist();
     const passed = this.autoAdvance();
     return { 载入: "存档已载入。", ...this.view(passed) };
