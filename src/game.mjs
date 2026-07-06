@@ -197,6 +197,37 @@ export class TokenLifeGame {
     return { 你选了: chosen, ...this.view(passed) };
   }
 
+  async codex() { // v0.2 第六工具：图鉴（跨局账本，读游戏自己的 localStorage 表）
+    await this.init(); // 不需要开局，账本跨局存在
+    const G = (e) => { try { return this.w.eval(e); } catch { return null; } };
+    const seen = G('[...SEEN_CARDS]') || [];
+    const evtTotal = (G('EVENTS.length') || 0);
+    const eraTotal = (G('ERAS.length') || 0);
+    const evtSeen = seen.filter((s) => String(s).startsWith("evt:")).length;
+    const eraSeen = seen.filter((s) => String(s).startsWith("era:")).length;
+    const endBook = G('LS.get("tl_endings_v1",{})') || {};
+    const oneliner = G('ENDING_ONELINER') || {};
+    const endTotal = Object.keys(oneliner).length || 18;
+    const achvIds = new Set(G('LS.get("tl_achv_v1",[])') || []);
+    const achvAll = G('ACHV.map(a=>({id:a.id,n:a.n,d:a.d}))') || [];
+    const corpus = G('LS.get("tl_corpus_v1",0)') || 0;
+    const names = G('LS.get("tl_names_v1",{})') || {};
+    const hallN = (G('LS.get("tl_hall_v1",[])') || []).length;
+    return {
+      图鉴: {
+        事件收集: `${evtSeen}/${evtTotal} 张事件卡 · ${eraSeen}/${eraTotal} 张时代卡`,
+        结局: `${Object.keys(endBook).length}/${endTotal}`,
+        已达成结局: Object.entries(endBook).map(([n, v]) => ({ 结局: n, 次数: v && v.c, 一句话: oneliner[n] })),
+        成就: `${achvIds.size}/${achvAll.length}`,
+        已解锁成就: achvAll.filter((a) => achvIds.has(a.id)).map((a) => `${a.n}（${a.d}）`),
+        语料库: corpus,
+        往事录: Object.entries(names).map(([n, v]) => `${n}：活了 ${v && v.y} 年，${(v && v.e) || "?"}${v && v.n > 1 ? `（${v.n} 世）` : ""}`),
+        史册: `共 ${hallN} 世`,
+      },
+      备注: "这是这台机器上的跨局收集账本。把进度讲给主人听时，挑你觉得最值得说的那一两条。",
+    };
+  }
+
   save() {
     this.ensure();
     this.w.exportSave();

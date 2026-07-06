@@ -74,6 +74,20 @@ server.registerTool(
 );
 
 server.registerTool(
+  "tokenlife_codex",
+  {
+    title: "看图鉴",
+    description:
+      "看这台机器上的跨局收集图鉴：事件卡/时代卡收集进度、达成过的结局（带一句话版）、成就墙、语料库余额、往事录（活过的名字）。不需要开局就能看。",
+    inputSchema: {},
+  },
+  async () => {
+    try { return asText(await game.codex()); }
+    catch (e) { return asErr("看图鉴失败：" + (e?.message || e)); }
+  }
+);
+
+server.registerTool(
   "tokenlife_save",
   {
     title: "导出存档码",
