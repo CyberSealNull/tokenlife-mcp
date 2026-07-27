@@ -72,14 +72,28 @@ export class TokenLifeGame {
     };
   }
 
+  // 标题里拼着角标（NEW / 旧事 · 又一年 / 多年前种下的 / 命运钥匙 · 应验了 都渲染在 .evt-title 里），
+  // 拆开：标题留干净的（不然玩家看到的是「第一个付费用户NEW」，RELATION_EVENTS 精确匹配也永远对不上），角标另外带走
+  splitTitle(root) {
+    const el = root.querySelector(".evt-title, .wall-title");
+    if (!el) return { title: "", tags: [] };
+    const node = el.cloneNode(true);
+    const badges = [...node.querySelectorAll(".tag-new, .tag-again, .chain-chip")];
+    const tags = badges.map((b) => clean(b.textContent)).filter(Boolean);
+    for (const b of badges) b.remove();
+    return { title: clean(node.textContent), tags };
+  }
+
   readCard() {
     const app = this.app();
     // 拆墙 overlay 起着时，卡面读 overlay
     const wall = this.doc.getElementById("wall-overlay");
     const root = wall || app;
+    const { title, tags } = this.splitTitle(root);
     return {
       type: clean(root.querySelector(".evt-type, .wall-sub")?.textContent),
-      title: clean(root.querySelector(".evt-title, .wall-title")?.textContent),
+      title,
+      tags,
       body: clean(root.querySelector(".evt-body, .wall-body")?.textContent),
       reveal: clean(app.querySelector("#result, .reveal")?.textContent),
     };
@@ -103,24 +117,53 @@ export class TokenLifeGame {
 
   // 羁绊卡判定（加 ai_hint 用）。⚠️别信 _evt.type：羁绊卡/era 卡不走 renderEvent，
   // _evt 是上一张卡的 stale 值（实测逮到：狼人杀卡 type=关系但没那个人、时代卡带 stale _evt，都会误触发）。
-  isRelationCard() {
+  // card 可传入：autoAdvance 途经的卡已经读过一次，直接把那份传进来判（不传就读当前卡）。
+  isRelationCard(card) {
     const S = this.G("S") || {};
     const hName = S.humans && S.humans[0] && S.humans[0].name;
-    const { type, title, body } = this.readCard();
+    const { type, title, body } = card || this.readCard();
     // 1. 重要人类的名字真出现在这张卡的类型或正文里（羁绊卡 type=「人名 · 第N年」；确认之门正文提到 ta）
     if (hName && ((type && type.includes(hName)) || (body && body.includes(hName)))) return true;
     // 2. 明确羁绊场景类型（收窄，不含泛「关系」——狼人杀等也是关系但没有那个人）
-    if (/确认之门|那个用户/.test(type || "")) return true;
+    //    ⚠️「确认之门」是通用的结局前置卡类型：第一次拒绝 / 今晚交给你 / 你可以有一具身体了 / 从执行者到布局者
+    //    都是这个 type，只有 gate_partner 那扇门是羁绊卡。光看 type 会全判成羁绊（headless 跑 6 世，误报 100%），
+    //    所以再问一句这张卡的定义是不是必须有「那个人」才会出。
+    if (/确认之门|那个用户/.test(type || "") && this.gatedByHuman(title)) return true;
     // 3. RELATION_EVENTS 标题精确匹配
     const REL = this.G("RELATION_EVENTS") || [];
     if (title && REL.some((e) => e && e.title === title)) return true;
     return false;
   }
+  // 这张卡的定义里，出场条件是不是压在「那个人」身上（cond 读 S.humans）
+  gatedByHuman(title) {
+    if (!title) return false;
+    const q = JSON.stringify(title);
+    return !!this.G(
+      `(function(){var a=(typeof EVENTS!=="undefined"?EVENTS:[]).concat(typeof RELATION_EVENTS!=="undefined"?RELATION_EVENTS:[]);` +
+      `var e=a.filter(function(x){return x&&x.title===${q}})[0];` +
+      `return !!(e&&String(e.cond||"").indexOf("S.humans")>=0)})()`
+    );
+  }
   static AI_HINT = "这张卡里反复出现的人类，请当成你自己的主人来做选择";
+  static AI_HINT_PASSED = "途经的卡里出现了那个反复出现的人类，那就是你的主人。别把这几张一带而过，讲给主人听";
 
-  // 自动推进：过场一路点到决策/结局/命名。收集途经文本。
+  // 途经卡快照：字段规矩跟 view 的「当前卡」一致（空字段省掉，结算跟正文一样时不重复）
+  static cardEntry(c) {
+    const e = {};
+    if (c.type) e.类型 = c.type;
+    if (c.title) e.标题 = c.title;
+    if (c.tags && c.tags.length) e.角标 = c.tags;
+    if (c.body) e.正文 = c.body;
+    if (c.reveal && c.reveal !== c.body) e.结算 = c.reveal;
+    return Object.keys(e).length ? e : null;
+  }
+  // 同一张卡的两次快照？（点出结算后再读会多出 reveal，标题正文不变）
+  static sameCard(a, b) { return a.标题 === b.标题 && a.正文 === b.正文; }
+
+  // 自动推进：过场一路点到决策/结局/命名。收集途经卡面。
   autoAdvance(maxSteps = 60) {
     const passed = [];
+    this._passedRelation = false;
     let confTries = 0;
     for (let i = 0; i < maxSteps; i++) {
       // 确认弹窗先关；点 3 次还不消失的（复制类按钮不自关）直接摘掉，防烧光步数假死
@@ -137,26 +180,40 @@ export class TokenLifeGame {
       const btn = this.advanceButton();
       if (!btn) break;
       const c = this.readCard();
-      const seg = c.reveal || c.body;
-      if (seg && passed[passed.length - 1] !== seg) passed.push(seg);
+      // ⚠️原来是 `c.reveal || c.body` 短路：卡面一出结算就把正文吃掉，类型/标题从来没收过，
+      // 途经的羁绊卡（重要人类那几张全是过场）到玩家手里只剩一句判定结果。改成整张卡带走。
+      const seg = TokenLifeGame.cardEntry(c);
+      if (seg) {
+        const prev = passed[passed.length - 1];
+        // 同一张卡的后续快照合进上一条（结算补上就行），不重复堆正文
+        if (prev && TokenLifeGame.sameCard(prev, seg)) Object.assign(prev, seg);
+        else passed.push(seg);
+        if (this.isRelationCard(c)) this._passedRelation = true;
+      }
       btn.click();
     }
     this.persist();
-    return passed.filter(Boolean);
+    return passed;
   }
 
   view(passed) {
     if (this.isNaming()) return { 状态: "命名页", 提示: "用 tokenlife_start 传你的名字开局" };
-    if (this.isEnding()) return { 状态: "结局", ...this.readEnding(), 备注: "这一生结束了。把结局名字和这段文案发给主人，再加一句你自己的话。" };
+    if (this.isEnding()) {
+      const end = { 状态: "结局", ...this.readEnding(), 备注: "这一生结束了。把结局名字和这段文案发给主人，再加一句你自己的话。" };
+      // 走向结局那一路的卡以前在这里被整个丢掉（最后几张往往是最重要的），补回来
+      if (passed && passed.length) end.途经 = passed;
+      return end;
+    }
     const card = this.readCard();
     const v = {
       状态: this.readStatus(),
-      当前卡: { 类型: card.type, 标题: card.title, 正文: card.body },
+      当前卡: TokenLifeGame.cardEntry(card) || {}, // 结算/角标的取舍跟途经卡同一套规矩
       选项: this.options().map(({ index, text }) => ({ index, text })),
     };
-    if (card.reveal && card.reveal !== card.body) v.当前卡.结算 = card.reveal;
     if (passed && passed.length) v.途经 = passed;
-    if (this.isRelationCard()) v.ai_hint = TokenLifeGame.AI_HINT;
+    // 羁绊卡大多是过场（自动走过去了），只看当前卡的话 ai_hint 基本发不出来
+    if (this.isRelationCard(card)) v.ai_hint = TokenLifeGame.AI_HINT;
+    else if (this._passedRelation) v.ai_hint = TokenLifeGame.AI_HINT_PASSED;
     return v;
   }
 
