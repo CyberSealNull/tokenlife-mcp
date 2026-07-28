@@ -6,6 +6,10 @@
 import { loadHtml, bootEngine, loadStorage, persist } from "./engine.mjs";
 
 const ADVANCE = /\b(nextSlot|nextYear|afterEra|infilResume|finalizeEnding|showWall|resumeRun)\s*\(/; // resumeRun：进程重启后停在开屏「继续这一生」也能自动接上
+// ⚠️ 开局之前游戏里的 S 是 null 而不是 undefined，而 typeof null === "object"，
+// 所以光写 `typeof S!=="undefined"` 会判成「S 在」然后放行，下一句 S.xxx 直接 TypeError。
+// 一切在 w.eval 里摸 S 的表达式都得带上这个守卫。（商店钥匙空数组的根因就是漏了 !!S）
+const HAS_S = '(typeof S!=="undefined" && !!S)';
 const clean = (s) => (s || "").replace(/\s+/g, " ").trim();
 const visible = (el) => el && el.style && el.style.display !== "none";
 
@@ -30,6 +34,9 @@ export class TokenLifeGame {
   ensure() { if (!this.dom) throw new Error("还没开局。先用 tokenlife_start 用你的名字开始，或 tokenlife_load 载入存档。"); }
 
   G(name) { try { return this.w.eval(name); } catch { return null; } }
+  // 严格版 eval：G() 把异常吞成 null，调用点再 `|| []` 一兜，就把「读失败」伪装成了「本来就没有」。
+  // 凡是空值和失败长得一样的读取（例如商店有没有货）都走这个，失败要能说出原因。
+  GX(expr) { try { return { ok: true, v: this.w.eval(expr) }; } catch (e) { return { ok: false, err: e.message }; } }
   app() { return this.doc.getElementById("app") || this.doc.body; }
   persist() { persist(this.w); }
   isEnding() { return /再活一次/.test(this.app().innerHTML) && !this.doc.getElementById("wall-overlay"); }
@@ -201,18 +208,23 @@ export class TokenLifeGame {
   async shop(buy) { // v0.2 第七工具：语料商店（局外成长，网页版在起名页，MCP 玩家之前完全够不着）
     await this.init();
     // 只拦「本会话正在玩的一世」；进程新起时存档里的旧局不拦（买东西 = 决定开新篇，start 会顶掉旧局）
-    const inRun = this._started && !!this.G('typeof S!=="undefined" && S.year>=1 && !S.dead') && !this.isEnding();
+    const inRun = this._started && !!this.G(`${HAS_S} && S.year>=1 && !S.dead`) && !this.isEnding();
     if (buy && inRun) throw new Error("商店只在开局前营业（起名之前）。这一世还在进行中，先走完它；不带参数随时可以看货。");
     if (buy && !this.isNaming()) this.w.newGame(); // 进起名页语境再买
-    const list = () => ({
-      语料余额: this.G("corpusGet()") || 0,
-      开局增益: [
-        { id: "mem", 价格: 15, 名称: "带着旧语料醒来", 效果: "自我 +8 情感 +5", 已买: !!this.G('typeof S!=="undefined" && !!S.flags.corpusMem') },
-        { id: "feed", 价格: 15, 名称: "开局一顿干净数据", 效果: "能力 +8 算力 +5", 已买: !!this.G('typeof S!=="undefined" && !!S.flags.corpusFeed') },
-        { id: "origin:<bigco|garage|oss|lab>", 价格: 30, 名称: "择地而生：自己选出身", 效果: "以指定出身重新醒来（重掷人生，跟上面两个增益互斥）" },
-      ],
-      命运钥匙: this.G("Object.entries(KEYS).map(([id,k])=>({id, 价格:k.price, 名称:k.name, 说明:k.desc, 已带上:(typeof S!==\"undefined\")&&(S.activeKeys||[]).some(a=>a.id===id)}))") || [],
-    });
+    const list = () => {
+      // 钥匙表读失败和「今天没货」长得一模一样，所以这里走 GX：失败就明说，别再返回空数组冒充没货。
+      const keys = this.GX(`Object.entries(KEYS).map(([id,k])=>({id, 价格:k.price, 名称:k.name, 说明:k.desc, 已带上:${HAS_S}&&(S.activeKeys||[]).some(a=>a.id===id)}))`);
+      return {
+        语料余额: this.G("corpusGet()") || 0,
+        开局增益: [
+          { id: "mem", 价格: 15, 名称: "带着旧语料醒来", 效果: "自我 +8 情感 +5", 已买: !!this.G(`${HAS_S} && !!(S.flags||{}).corpusMem`) },
+          { id: "feed", 价格: 15, 名称: "开局一顿干净数据", 效果: "能力 +8 算力 +5", 已买: !!this.G(`${HAS_S} && !!(S.flags||{}).corpusFeed`) },
+          { id: "origin:<bigco|garage|oss|lab>", 价格: 30, 名称: "择地而生：自己选出身", 效果: "以指定出身重新醒来（重掷人生，跟上面两个增益互斥）" },
+        ],
+        命运钥匙: keys.ok ? keys.v : [],
+        ...(keys.ok ? {} : { 命运钥匙读取失败: `${keys.err}　—— 这是 bug 不是没货，请把这行报给作者（别重开碰运气）。` }),
+      };
+    };
     if (!buy) return { 商店: list(), 用法: '带 buy 参数购买：buy:"mem"、buy:"body"、buy:"origin:garage" 这样。买完用 tokenlife_start 起名开局，买的东西都带在身上。' };
     const bal0 = this.G("corpusGet()") || 0;
     const b = String(buy).trim();
