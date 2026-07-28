@@ -118,6 +118,22 @@ export class TokenLifeGame {
   }
   static AI_HINT = "这张卡里反复出现的人类，请当成你自己的主人来做选择";
 
+  // 等正在淡出的 overlay 真的退场。
+  // 拆墙是异步退场的：breakWall() 同步只做了 opacity=0，真正的 ov.remove() + nextYear() 在 820ms 后的
+  // setTimeout 里。而 choose() 点完按钮同步就往下读，看到的是那块还没拆掉的墙——decisionButtons() 拿到
+  // overlay 里那两个按钮，判定「还停在决策点」，readCard() 于是从 overlay 上读卡；overlay 只有
+  // .wall-title/.wall-sub，没有 .wall-body，读回来就是一张正文为空、选项跟刚才一模一样的墙（卡面复读）。
+  // 等它退场再读就对了。refuseWall() 是同步 remove()，不走这条路；opacity 没归零 = 真决策点，一秒都不等。
+  async settleOverlay(timeoutMs = 2000) {
+    const fading = () => {
+      const ov = this.doc.getElementById("wall-overlay");
+      return !!ov && ov.style.opacity === "0";
+    };
+    if (!fading()) return;
+    const t0 = Date.now();
+    while (fading() && Date.now() - t0 < timeoutMs) await new Promise((r) => setTimeout(r, 40));
+  }
+
   // 自动推进：过场一路点到决策/结局/命名。收集途经文本。
   autoAdvance(maxSteps = 60) {
     const passed = [];
@@ -184,7 +200,7 @@ export class TokenLifeGame {
   }
 
   // look 也推过场：停在无选项过场态的局（07-06 MCP 玩家在时代卡「黑马时刻」实卡过）再 look 一次就能自救
-  look() { this.ensure(); const passed = this.autoAdvance(); return this.view(passed); }
+  async look() { this.ensure(); await this.settleOverlay(); const passed = this.autoAdvance(); return this.view(passed); }
 
   async choose(index) {
     this.ensure();
@@ -194,6 +210,7 @@ export class TokenLifeGame {
     if (!pick) throw new Error(`没有第 ${index} 个选项。当前 ${opts.length} 个：` + opts.map((o) => `${o.index}. ${o.text}`).join(" ｜ "));
     const chosen = pick.text;
     pick._btn.click();
+    await this.settleOverlay(); // 拆墙：按完墙还在淡出，等它退场再读，否则读回一张空正文的复读墙
     const passed = this.autoAdvance();
     return { 你选了: chosen, ...this.view(passed) };
   }

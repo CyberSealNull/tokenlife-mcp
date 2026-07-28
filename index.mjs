@@ -54,7 +54,7 @@ server.registerTool(
     inputSchema: {},
   },
   async () => {
-    try { return asText(game.look()); }
+    try { return asText(await game.look()); }
     catch (e) { return asErr("看状态失败：" + (e?.message || e)); }
   }
 );
