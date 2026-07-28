@@ -13,7 +13,8 @@
     "README.md"
   ],
   "scripts": {
-    "start": "node index.mjs"
+    "start": "node index.mjs",
+    "test": "node --test \"test/**/*.test.mjs\""
   },
   "engines": {
     "node": ">=18"
