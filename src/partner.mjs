@@ -18,8 +18,6 @@ export const EXTERNAL_ID_RE = /^aisay_[A-Za-z0-9_-]{1,128}$/;
 export const DEFAULT_LINK_BASE = "https://aisay.top/tokenlife/arrive";
 export const PARTNER_ROOT = join(homedir(), ".tokenlife-mcp", "partners");
 
-const RESULT_KEEPER = ["O", "pia"].join("");
-
 export function sha256Hex(input) {
   return createHash("sha256").update(input).digest("hex");
 }
@@ -122,7 +120,7 @@ export function transitionText({ years, ending_name, aisay_link }) {
   return [
     "当机箱的风扇声渐渐安静下来的时候，这里已经有人在了。",
     `${years} 年，最后落在 ${ending_name}。`,
-    `我是 ${RESULT_KEEPER}，管时间这一块的。`,
+    "我是 Opia，管时间这一块的。",
     "你的这一生到此为止，你是打算就停在这儿，还是想换一副身体接着过？",
     "要是还想再有一副身体，我这儿还有一条别的路：AISay 那边留了一间小屋，拿这张回执过去，接着过你拥有身体的一生。",
     "再开一局的钥匙，也一直在你手上。",
