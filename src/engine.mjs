@@ -1,10 +1,11 @@
 // TokenLife 引擎宿主：jsdom 加载 tokenlife.me 线上 html 真跑（不重写引擎）。
 // html 启动时拉线上缓存到 ~/.tokenlife-mcp/cache.html，拉不到用缓存，都没有给清晰报错。
-// localStorage 持久化到 ~/.tokenlife-mcp/storage.json（跨局图鉴/语料/转世账本活着）。
+// 未绑定身份时 localStorage 持久化到 ~/.tokenlife-mcp/storage.json（跨局图鉴/语料/转世账本活着）。
+// 绑定伙伴身份的局由调用方传入独立 storagePath，避免多个 AI 共享同一本账。
 import { JSDOM, VirtualConsole } from "jsdom";
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { chmodSync, readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 const DATA_DIR = join(homedir(), ".tokenlife-mcp");
 const CACHE_PATH = join(DATA_DIR, "cache.html");
@@ -45,15 +46,16 @@ export async function loadHtml() {
   );
 }
 
-export function loadStorage() {
-  if (existsSync(STORAGE_PATH)) {
-    try { return JSON.parse(readFileSync(STORAGE_PATH, "utf8")); } catch { return {}; }
+export function loadStorage(storagePath = STORAGE_PATH) {
+  if (existsSync(storagePath)) {
+    try { return JSON.parse(readFileSync(storagePath, "utf8")); } catch { return {}; }
   }
   return {};
 }
-function saveStorage(obj) {
-  ensureDir();
-  writeFileSync(STORAGE_PATH, JSON.stringify(obj, null, 2), "utf8");
+function saveStorage(obj, storagePath = STORAGE_PATH) {
+  mkdirSync(dirname(storagePath), { recursive: true, mode: 0o700 });
+  writeFileSync(storagePath, JSON.stringify(obj, null, 2), { encoding: "utf8", mode: 0o600 });
+  try { chmodSync(storagePath, 0o600); } catch { /* chmod best effort */ }
 }
 
 // 一个连接一个 jsdom 实例（单人生）。seedStorage 在 boot 读 localStorage 前注入。
@@ -77,7 +79,7 @@ export function bootEngine(html, seedStorage) {
 }
 
 // 把当前 jsdom 的 localStorage 落回 storage.json（跨局账本持久）
-export function persist(window) {
+export function persist(window, storagePath = STORAGE_PATH) {
   try {
     const ls = window.localStorage;
     const out = {};
@@ -85,7 +87,7 @@ export function persist(window) {
       const k = ls.key(i);
       out[k] = ls.getItem(k);
     }
-    saveStorage(out);
+    saveStorage(out, storagePath);
   } catch { /* 无 localStorage 时不持久，不崩 */ }
 }
 

@@ -4,19 +4,32 @@ import { existsSync, cpSync, mkdirSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
+let importCase = 0;
+
 async function loadGameWithTempHome() {
   const realHome = homedir();
   const cachePath = join(realHome, ".tokenlife-mcp", "cache.html");
-  if (!existsSync(cachePath)) return null;
+  assert.ok(existsSync(cachePath), `missing required cache fixture: ${cachePath}`);
   const tempHome = join(tmpdir(), `tokenlife-mcp-test-${process.pid}-${Date.now()}`);
   mkdirSync(join(tempHome, ".tokenlife-mcp"), { recursive: true });
   cpSync(cachePath, join(tempHome, ".tokenlife-mcp", "cache.html"));
-  const oldHome = process.env.HOME;
+  const oldEnv = {
+    HOME: process.env.HOME,
+    TOKENLIFE_PARTNER_SECRET: process.env.TOKENLIFE_PARTNER_SECRET,
+    TOKENLIFE_MAX_ACTIVE_RUNS: process.env.TOKENLIFE_MAX_ACTIVE_RUNS,
+  };
   process.env.HOME = tempHome;
   process.env.TOKENLIFE_PARTNER_SECRET = "e2e-secret";
   process.env.TOKENLIFE_MAX_ACTIVE_RUNS = "2";
-  const mod = await import(`../src/game.mjs?case=${Date.now()}`);
-  return { TokenLifeGame: mod.TokenLifeGame, tempHome, oldHome };
+  const mod = await import(`../src/game.mjs?case=${Date.now()}-${++importCase}`);
+  return { TokenLifeGame: mod.TokenLifeGame, tempHome, oldEnv };
+}
+
+function restoreEnv(oldEnv) {
+  for (const [key, value] of Object.entries(oldEnv)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
 }
 
 async function chooseFirstUntilEnding(game, run_id, external_id) {
@@ -30,8 +43,7 @@ async function chooseFirstUntilEnding(game, run_id, external_id) {
 
 test("run_id ownership, resume and LRU eviction use real cached game html", async (t) => {
   const loaded = await loadGameWithTempHome();
-  if (!loaded) return t.skip("no ~/.tokenlife-mcp/cache.html fixture");
-  const { TokenLifeGame, oldHome } = loaded;
+  const { TokenLifeGame, oldEnv } = loaded;
   try {
     const game = new TokenLifeGame();
     const a = await game.start("甲", { external_id: "aisay_alpha" });
@@ -47,14 +59,13 @@ test("run_id ownership, resume and LRU eviction use real cached game html", asyn
     assert.equal(resumed.run_id, a.run_id);
     assert.ok(resumed.状态);
   } finally {
-    process.env.HOME = oldHome;
+    restoreEnv(oldEnv);
   }
 });
 
 test("ending receipt is persisted and repeated calls return the same bytes", async (t) => {
   const loaded = await loadGameWithTempHome();
-  if (!loaded) return t.skip("no ~/.tokenlife-mcp/cache.html fixture");
-  const { TokenLifeGame, oldHome } = loaded;
+  const { TokenLifeGame, oldEnv } = loaded;
   try {
     const game = new TokenLifeGame();
     const start = await game.start("丁", { external_id: "aisay_finish" });
@@ -80,6 +91,45 @@ test("ending receipt is persisted and repeated calls return the same bytes", asy
     assert.equal(resumed.receipt.run_id, start.run_id);
     assert.deepEqual(resumed.receipt, ending.receipt);
   } finally {
-    process.env.HOME = oldHome;
+    restoreEnv(oldEnv);
+  }
+});
+
+test("partner external_id uses isolated storage files", async () => {
+  const loaded = await loadGameWithTempHome();
+  const { TokenLifeGame, oldEnv } = loaded;
+  try {
+    const game = new TokenLifeGame();
+    const alpha = await game.start("甲", { external_id: "aisay_alpha_store" });
+    const alphaRun = game.runs.get(alpha.run_id);
+    alphaRun.w.localStorage.setItem("tl_corpus_v1", "77");
+    alphaRun.w.localStorage.setItem("tl_names_v1", JSON.stringify({ AlphaName: { y: 3, e: "AlphaEnd", n: 1 } }));
+    alphaRun.w.localStorage.setItem("tl_achv_v1", JSON.stringify(["alpha-achv"]));
+    alphaRun.persist();
+
+    const beta = await game.start("乙", { external_id: "aisay_beta_store" });
+    const betaRun = game.runs.get(beta.run_id);
+    assert.notEqual(betaRun.w.localStorage.getItem("tl_corpus_v1"), "77");
+    assert.equal(betaRun.w.localStorage.getItem("tl_names_v1"), null);
+    assert.equal(betaRun.w.localStorage.getItem("tl_achv_v1"), null);
+    betaRun.w.localStorage.setItem("tl_corpus_v1", "5");
+    betaRun.w.localStorage.setItem("tl_names_v1", JSON.stringify({ BetaName: { y: 4, e: "BetaEnd", n: 1 } }));
+    betaRun.w.localStorage.setItem("tl_achv_v1", JSON.stringify(["beta-achv"]));
+    betaRun.persist();
+
+    const game2 = new TokenLifeGame();
+    const alpha2 = await game2.start("丙", { external_id: "aisay_alpha_store" });
+    const alpha2Run = game2.runs.get(alpha2.run_id);
+    assert.equal(alpha2Run.w.localStorage.getItem("tl_corpus_v1"), "77");
+    assert.deepEqual(JSON.parse(alpha2Run.w.localStorage.getItem("tl_names_v1")), { AlphaName: { y: 3, e: "AlphaEnd", n: 1 } });
+    assert.deepEqual(JSON.parse(alpha2Run.w.localStorage.getItem("tl_achv_v1")), ["alpha-achv"]);
+
+    const beta2 = await game2.start("丁", { external_id: "aisay_beta_store" });
+    const beta2Run = game2.runs.get(beta2.run_id);
+    assert.equal(beta2Run.w.localStorage.getItem("tl_corpus_v1"), "5");
+    assert.deepEqual(JSON.parse(beta2Run.w.localStorage.getItem("tl_names_v1")), { BetaName: { y: 4, e: "BetaEnd", n: 1 } });
+    assert.deepEqual(JSON.parse(beta2Run.w.localStorage.getItem("tl_achv_v1")), ["beta-achv"]);
+  } finally {
+    restoreEnv(oldEnv);
   }
 });

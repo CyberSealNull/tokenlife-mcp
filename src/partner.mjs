@@ -44,6 +44,10 @@ export function runPath(externalId, runId) {
   return join(runOwnerDir(externalId), "runs", `${runId}.json`);
 }
 
+export function partnerStoragePath(externalId) {
+  return join(runOwnerDir(externalId), "storage.json");
+}
+
 function ensurePrivateDir(path) {
   mkdirSync(path, { recursive: true, mode: 0o700 });
   chmodSync(path, 0o700);

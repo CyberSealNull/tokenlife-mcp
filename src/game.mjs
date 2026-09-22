@@ -5,6 +5,7 @@ import {
   buildAisayLink,
   cleanupExpiredPartnerRuns,
   makeReceipt,
+  partnerStoragePath,
   readRunRecord,
   resolveExternalId,
   transitionText,
@@ -32,6 +33,7 @@ class TokenLifeRun {
     };
     this.dom = null;
     this._started = false;
+    this.storagePath = externalId ? partnerStoragePath(externalId) : undefined;
     this.lastUsed = Date.now();
   }
 
@@ -40,7 +42,7 @@ class TokenLifeRun {
     const { html, source, liveErr } = await this.manager.htmlBundle();
     this.htmlSource = source;
     this.liveErr = liveErr;
-    this.dom = bootEngine(html, loadStorage());
+    this.dom = bootEngine(html, loadStorage(this.storagePath));
     this.w = this.dom.window;
     this.doc = this.w.document;
     if (!this.doc.getElementById("save-io")) {
@@ -74,7 +76,7 @@ class TokenLifeRun {
   isNaming() { return !!this.doc.getElementById("mname"); }
 
   persist() {
-    persist(this.w);
+    persist(this.w, this.storagePath);
     this.touch();
     try {
       this.record.save_code = this.exportSaveCode();
