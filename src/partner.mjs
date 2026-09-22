@@ -60,7 +60,7 @@ export function ensurePartnerTree(externalId) {
   return root;
 }
 
-function atomicWriteJson(path, obj) {
+export function atomicWriteJson(path, obj) {
   ensurePrivateDir(dirname(path));
   const tmp = join(dirname(path), `.${process.pid}.${Date.now()}.${randomBytes(4).toString("hex")}.tmp`);
   writeFileSync(tmp, JSON.stringify(obj, null, 2), { encoding: "utf8", mode: 0o600 });
@@ -85,20 +85,37 @@ export function cleanupExpiredPartnerRuns(retentionDays = Number(process.env.TOK
   const cutoff = Date.now() - Math.max(1, retentionDays) * 86400_000;
   let removed = 0;
   for (const owner of readdirSync(PARTNER_ROOT)) {
-    const runsDir = join(PARTNER_ROOT, owner, "runs");
-    if (!existsSync(runsDir)) continue;
-    for (const file of readdirSync(runsDir)) {
-      if (!file.endsWith(".json")) continue;
-      const path = join(runsDir, file);
-      let updatedAt = statSync(path).mtimeMs;
-      try {
-        const rec = JSON.parse(readFileSync(path, "utf8"));
-        updatedAt = Date.parse(rec.updated_at || rec.created_at || "") || updatedAt;
-      } catch {
-        // Keep unreadable files; manual repair is safer than blind deletion.
+    const ownerDir = join(PARTNER_ROOT, owner);
+    const runsDir = join(ownerDir, "runs");
+    let remainingRuns = 0;
+    let removedOwnerRun = false;
+    if (existsSync(runsDir)) {
+      for (const file of readdirSync(runsDir)) {
+        if (!file.endsWith(".json")) continue;
+        const path = join(runsDir, file);
+        let updatedAt = statSync(path).mtimeMs;
+        try {
+          const rec = JSON.parse(readFileSync(path, "utf8"));
+          updatedAt = Date.parse(rec.updated_at || rec.created_at || "") || updatedAt;
+        } catch {
+          // Keep unreadable files; manual repair is safer than blind deletion.
+          remainingRuns += 1;
+          continue;
+        }
+        if (updatedAt < cutoff) {
+          rmSync(path, { force: true });
+          removed += 1;
+          removedOwnerRun = true;
+        } else {
+          remainingRuns += 1;
+        }
       }
-      if (updatedAt < cutoff) {
-        rmSync(path, { force: true });
+    }
+    const storagePath = join(ownerDir, "storage.json");
+    if (remainingRuns === 0 && existsSync(storagePath)) {
+      const storageExpired = removedOwnerRun || statSync(storagePath).mtimeMs < cutoff;
+      if (storageExpired) {
+        rmSync(storagePath, { force: true });
         removed += 1;
       }
     }

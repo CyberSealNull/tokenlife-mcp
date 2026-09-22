@@ -3,9 +3,10 @@
 // 未绑定身份时 localStorage 持久化到 ~/.tokenlife-mcp/storage.json（跨局图鉴/语料/转世账本活着）。
 // 绑定伙伴身份的局由调用方传入独立 storagePath，避免多个 AI 共享同一本账。
 import { JSDOM, VirtualConsole } from "jsdom";
-import { chmodSync, readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
+import { atomicWriteJson } from "./partner.mjs";
 
 const DATA_DIR = join(homedir(), ".tokenlife-mcp");
 const CACHE_PATH = join(DATA_DIR, "cache.html");
@@ -47,15 +48,15 @@ export async function loadHtml() {
 }
 
 export function loadStorage(storagePath = STORAGE_PATH) {
-  if (existsSync(storagePath)) {
-    try { return JSON.parse(readFileSync(storagePath, "utf8")); } catch { return {}; }
+  if (!existsSync(storagePath)) return {};
+  try {
+    return JSON.parse(readFileSync(storagePath, "utf8"));
+  } catch (e) {
+    throw new Error(`storage 解析失败 ${storagePath}: ${(e && e.message) || String(e)}`);
   }
-  return {};
 }
 function saveStorage(obj, storagePath = STORAGE_PATH) {
-  mkdirSync(dirname(storagePath), { recursive: true, mode: 0o700 });
-  writeFileSync(storagePath, JSON.stringify(obj, null, 2), { encoding: "utf8", mode: 0o600 });
-  try { chmodSync(storagePath, 0o600); } catch { /* chmod best effort */ }
+  atomicWriteJson(storagePath, obj);
 }
 
 // 一个连接一个 jsdom 实例（单人生）。seedStorage 在 boot 读 localStorage 前注入。
@@ -80,15 +81,17 @@ export function bootEngine(html, seedStorage) {
 
 // 把当前 jsdom 的 localStorage 落回 storage.json（跨局账本持久）
 export function persist(window, storagePath = STORAGE_PATH) {
+  let ls;
   try {
-    const ls = window.localStorage;
-    const out = {};
-    for (let i = 0; i < ls.length; i++) {
-      const k = ls.key(i);
-      out[k] = ls.getItem(k);
-    }
-    saveStorage(out, storagePath);
+    ls = window.localStorage;
   } catch { /* 无 localStorage 时不持久，不崩 */ }
+  if (!ls) return;
+  const out = {};
+  for (let i = 0; i < ls.length; i++) {
+    const k = ls.key(i);
+    out[k] = ls.getItem(k);
+  }
+  saveStorage(out, storagePath);
 }
 
 export { DATA_DIR, CACHE_PATH, STORAGE_PATH, GAME_URL };

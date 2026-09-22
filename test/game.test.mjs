@@ -1,8 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, cpSync, mkdirSync } from "node:fs";
+import fs, { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 let importCase = 0;
 
@@ -131,5 +132,73 @@ test("partner external_id uses isolated storage files", async () => {
     assert.deepEqual(JSON.parse(beta2Run.w.localStorage.getItem("tl_achv_v1")), ["beta-achv"]);
   } finally {
     restoreEnv(oldEnv);
+  }
+});
+
+test("storage persist is atomic and corrupt storage does not seed an empty ledger", async () => {
+  const storagePath = join(tmpdir(), `tokenlife-mcp-atomic-${process.pid}-${Date.now()}`, "owner", "storage.json");
+  mkdirSync(dirname(storagePath), { recursive: true });
+  writeFileSync(storagePath, "{\"stable\":true}\n", "utf8");
+  const originalWriteFileSync = fs.writeFileSync;
+  fs.writeFileSync = function patchedWriteFileSync(path, ...args) {
+    if (String(path).includes("/.") && String(path).endsWith(".tmp")) {
+      throw new Error("simulated temp write interruption");
+    }
+    return originalWriteFileSync.call(this, path, ...args);
+  };
+  syncBuiltinESMExports();
+  const { loadStorage, persist } = await import(`../src/engine.mjs?atomic=${Date.now()}-${++importCase}`);
+  try {
+    const fakeWindow = {
+      localStorage: {
+        length: 1,
+        key: () => "tl_corpus_v1",
+        getItem: () => "999",
+      },
+    };
+    assert.throws(() => persist(fakeWindow, storagePath), /simulated temp write interruption/);
+  } finally {
+    fs.writeFileSync = originalWriteFileSync;
+    syncBuiltinESMExports();
+  }
+  assert.equal(readFileSync(storagePath, "utf8"), "{\"stable\":true}\n");
+
+  writeFileSync(storagePath, "{\"stable\":", "utf8");
+  assert.throws(
+    () => loadStorage(storagePath),
+    /storage 解析失败/,
+  );
+  assert.equal(readFileSync(storagePath, "utf8"), "{\"stable\":");
+});
+
+test("partner retention removes owner storage when all runs expire", async () => {
+  const tempHome = join(tmpdir(), `tokenlife-mcp-cleanup-${process.pid}-${Date.now()}`);
+  const oldHome = process.env.HOME;
+  process.env.HOME = tempHome;
+  try {
+    const {
+      cleanupExpiredPartnerRuns,
+      partnerStoragePath,
+      runPath,
+    } = await import(`../src/partner.mjs?cleanup=${Date.now()}-${++importCase}`);
+    const externalId = "aisay_cleanup_owner";
+    const expired = "2026-01-01T00:00:00Z";
+    const runFile = runPath(externalId, "old-run");
+    const storageFile = partnerStoragePath(externalId);
+    mkdirSync(dirname(runFile), { recursive: true });
+    writeFileSync(runFile, JSON.stringify({
+      external_id: externalId,
+      run_id: "old-run",
+      created_at: expired,
+      updated_at: expired,
+    }), "utf8");
+    writeFileSync(storageFile, JSON.stringify({ tl_corpus_v1: "77" }), "utf8");
+
+    assert.equal(cleanupExpiredPartnerRuns(90), 2);
+    assert.equal(existsSync(runFile), false);
+    assert.equal(existsSync(storageFile), false);
+  } finally {
+    if (oldHome === undefined) delete process.env.HOME;
+    else process.env.HOME = oldHome;
   }
 });
