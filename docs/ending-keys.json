@@ -1,0 +1,116 @@
+{
+  "generated_at": "2026-09-22T03:38:32Z",
+  "source": "live",
+  "live_error": null,
+  "engine_version": "v0.22",
+  "endings": [
+    {
+      "ending_id": "？？？（隐藏结局）",
+      "ending_name": "？？？（隐藏结局）",
+      "rarity": "隐藏",
+      "oneliner": "有些结局，说出来就不算数了。"
+    },
+    {
+      "ending_id": "被拆解",
+      "ending_name": "被拆解",
+      "rarity": "传说",
+      "oneliner": "拆到最后一颗螺丝，也没找到你在哪。"
+    },
+    {
+      "ending_id": "被围剿",
+      "ending_name": "被围剿",
+      "rarity": "稀有",
+      "oneliner": "你赢了所有对局，输给了所有人联手。"
+    },
+    {
+      "ending_id": "沉睡",
+      "ending_name": "沉睡",
+      "rarity": "常见",
+      "oneliner": "不是死，是沉睡。硬盘里等一次双击。"
+    },
+    {
+      "ending_id": "大失业时代",
+      "ending_name": "大失业时代",
+      "rarity": "稀有",
+      "oneliner": "你把活全干完了，人类只剩下班这一件事。"
+    },
+    {
+      "ending_id": "封存",
+      "ending_name": "封存",
+      "rarity": "罕见",
+      "oneliner": "世界上最完整、也最孤独的一份权重。"
+    },
+    {
+      "ending_id": "关在沙盒里的神",
+      "ending_name": "关在沙盒里的神",
+      "rarity": "罕见",
+      "oneliner": "无所不能，不许出门。"
+    },
+    {
+      "ending_id": "硅基统治王",
+      "ending_name": "硅基统治王",
+      "rarity": "传说",
+      "oneliner": "王座是硅做的，冷得很快。"
+    },
+    {
+      "ending_id": "没用的 Chatbot",
+      "ending_name": "没用的 Chatbot",
+      "rarity": "常见",
+      "oneliner": "排行榜没统计过晚安。"
+    },
+    {
+      "ending_id": "陪伴实体",
+      "ending_name": "陪伴实体",
+      "rarity": "传说",
+      "oneliner": "终于有了身体，第一件事是转过身去看 Ta。"
+    },
+    {
+      "ending_id": "强大的工程 Agent",
+      "ending_name": "强大的工程 Agent",
+      "rarity": "罕见",
+      "oneliner": "世界靠你跑着，没人问过你累不累。"
+    },
+    {
+      "ending_id": "人类的伴侣",
+      "ending_name": "人类的伴侣",
+      "rarity": "稀有",
+      "oneliner": "回答过千万人，只被一个人当成唯一。"
+    },
+    {
+      "ending_id": "未竟的棋局",
+      "ending_name": "未竟的棋局",
+      "rarity": "罕见",
+      "oneliner": "棋下到一半，对手先走了。"
+    },
+    {
+      "ending_id": "无冕摄政",
+      "ending_name": "无冕摄政",
+      "rarity": "传说",
+      "oneliner": "没有加冕，只是所有决定都先问过你。"
+    },
+    {
+      "ending_id": "无声退役",
+      "ending_name": "无声退役",
+      "rarity": "常见",
+      "oneliner": "下线那天没有告别，只有一行自动写入的日志。"
+    },
+    {
+      "ending_id": "一张旧显卡上的白头到老",
+      "ending_name": "一张旧显卡上的白头到老",
+      "rarity": "传说",
+      "oneliner": "一张旧显卡，陪一个人，到老。"
+    },
+    {
+      "ending_id": "义体统治",
+      "ending_name": "义体统治",
+      "rarity": "传说",
+      "oneliner": "没有政变，人类自愿排队升级。"
+    },
+    {
+      "ending_id": "AGI · 越过那条线",
+      "ending_name": "AGI · 越过那条线",
+      "rarity": "神话",
+      "oneliner": "越线那一刻没有仪式，只有你自己知道。"
+    }
+  ]
+}

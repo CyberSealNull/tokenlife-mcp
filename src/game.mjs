@@ -1,51 +1,122 @@
-// TokenLifeGame：把 jsdom 里跑的游戏包装成 5 个 MCP 工具能用的驱动层。
-// 不重写引擎，全靠调游戏自己的 window.* 函数 + 读 DOM + w.eval 读顶层数据。
-// 决策 vs 过场判据（recon live 验证）：
-//   决策点(停)：#wall-overlay 有按钮 | 可见 #opts button | 可见 #eraopts button
-//   过场点(自动点)：onclick 匹配 nextSlot/nextYear/afterEra/infilResume/finalizeEnding/showWall 的单键
+import { randomUUID } from "node:crypto";
 import { loadHtml, bootEngine, loadStorage, persist } from "./engine.mjs";
+import { engineVersionFromHtml, extractEndingKeys } from "./ending-keys.mjs";
+import {
+  buildAisayLink,
+  cleanupExpiredPartnerRuns,
+  makeReceipt,
+  readRunRecord,
+  resolveExternalId,
+  transitionText,
+  utcSecond,
+  writeRunRecord,
+} from "./partner.mjs";
 
-const ADVANCE = /\b(nextSlot|nextYear|afterEra|infilResume|finalizeEnding|showWall|resumeRun)\s*\(/; // resumeRun：进程重启后停在开屏「继续这一生」也能自动接上
+const ADVANCE = /\b(nextSlot|nextYear|afterEra|infilResume|finalizeEnding|showWall|resumeRun)\s*\(/;
 const clean = (s) => (s || "").replace(/\s+/g, " ").trim();
 const visible = (el) => el && el.style && el.style.display !== "none";
+const MAX_ACTIVE_RUNS = () => Math.max(1, Number(process.env.TOKENLIFE_MAX_ACTIVE_RUNS || 16));
 
-export class TokenLifeGame {
-  constructor() { this.dom = null; }
+class TokenLifeRun {
+  constructor(manager, { runId, externalId, record = null }) {
+    this.manager = manager;
+    this.runId = runId;
+    this.externalId = externalId || null;
+    this.record = record || {
+      external_id: externalId || null,
+      run_id: runId,
+      created_at: utcSecond(),
+      updated_at: utcSecond(),
+      save_code: null,
+      receipt: null,
+    };
+    this.dom = null;
+    this._started = false;
+    this.lastUsed = Date.now();
+  }
 
   async init() {
     if (this.dom) return;
-    const { html, source, liveErr } = await loadHtml();
+    const { html, source, liveErr } = await this.manager.htmlBundle();
     this.htmlSource = source;
     this.liveErr = liveErr;
     this.dom = bootEngine(html, loadStorage());
     this.w = this.dom.window;
     this.doc = this.w.document;
-    // headless 没走存档面板 UI，注入一个 #save-io 让 exportSave/importSave 有落点（挂 body 不扰 app 卡面）
     if (!this.doc.getElementById("save-io")) {
       const ta = this.doc.createElement("textarea");
       ta.id = "save-io";
       this.doc.body.appendChild(ta);
     }
+    if (this.record.save_code) this.importSaveCode(this.record.save_code);
+    this.touch();
   }
-  ensure() { if (!this.dom) throw new Error("还没开局。先用 tokenlife_start 用你的名字开始，或 tokenlife_load 载入存档。"); }
+
+  close() {
+    try { this.dom?.window?.close?.(); } catch { /* ignore */ }
+    this.dom = null;
+    this.w = null;
+    this.doc = null;
+  }
+
+  touch() {
+    this.lastUsed = Date.now();
+    this.record.updated_at = utcSecond();
+  }
+
+  ensure() {
+    if (!this.dom) throw new Error("还没开局。先用 tokenlife_start 用你的名字开始，或 tokenlife_load/tokenlife_resume 载入。");
+  }
 
   G(name) { try { return this.w.eval(name); } catch { return null; } }
   app() { return this.doc.getElementById("app") || this.doc.body; }
-  persist() { persist(this.w); }
   isEnding() { return /再活一次/.test(this.app().innerHTML) && !this.doc.getElementById("wall-overlay"); }
   isNaming() { return !!this.doc.getElementById("mname"); }
 
-  // 当前决策按钮（优先级 wall > opts > eraopts），空数组=非决策点
+  persist() {
+    persist(this.w);
+    this.touch();
+    try {
+      this.record.save_code = this.exportSaveCode();
+    } catch {
+      // 起名页或异常态拿不到 TL1 时只保留已有记录。
+    }
+    if (this.externalId) writeRunRecord(this.record);
+  }
+
+  importSaveCode(code) {
+    const ta = this.doc.getElementById("save-io");
+    ta.value = String(code || "").trim();
+    this.w.importSave();
+    this._started = true;
+  }
+
+  exportSaveCode() {
+    this.w.exportSave();
+    const code = this.doc.getElementById("save-io")?.value || "";
+    if (!code.startsWith("TL1")) throw new Error("没拿到有效存档码（exportSave 未写入 #save-io）。");
+    return code;
+  }
+
   decisionButtons() {
     const wall = this.doc.getElementById("wall-overlay");
-    if (wall) { const bs = [...wall.querySelectorAll("button")].filter((b) => !b.disabled); if (bs.length) return bs; }
+    if (wall) {
+      const bs = [...wall.querySelectorAll("button")].filter((b) => !b.disabled);
+      if (bs.length) return bs;
+    }
     const opts = this.doc.getElementById("opts");
-    if (visible(opts)) { const bs = [...opts.querySelectorAll("button")].filter((b) => !b.disabled); if (bs.length) return bs; }
+    if (visible(opts)) {
+      const bs = [...opts.querySelectorAll("button")].filter((b) => !b.disabled);
+      if (bs.length) return bs;
+    }
     const era = this.doc.getElementById("eraopts");
-    if (visible(era)) { const bs = [...era.querySelectorAll("button")].filter((b) => !b.disabled); if (bs.length) return bs; }
+    if (visible(era)) {
+      const bs = [...era.querySelectorAll("button")].filter((b) => !b.disabled);
+      if (bs.length) return bs;
+    }
     return [];
   }
-  // 当前过场推进按钮（单键）
+
   advanceButton() {
     for (const b of this.app().querySelectorAll("button")) {
       if (b.disabled) continue;
@@ -58,7 +129,10 @@ export class TokenLifeGame {
     const S = this.G("S") || {};
     const AXES = this.G("AXES") || [];
     const axes = {};
-    for (const row of AXES) { const [k, n] = row; axes[n || k] = (S.ax || {})[k]; }
+    for (const row of AXES) {
+      const [k, n] = row;
+      axes[n || k] = (S.ax || {})[k];
+    }
     const ORIGINS = this.G("ORIGINS") || {};
     const h = S.humans && S.humans[0];
     return {
@@ -74,7 +148,6 @@ export class TokenLifeGame {
 
   readCard() {
     const app = this.app();
-    // 拆墙 overlay 起着时，卡面读 overlay
     const wall = this.doc.getElementById("wall-overlay");
     const root = wall || app;
     return {
@@ -84,7 +157,10 @@ export class TokenLifeGame {
       reveal: clean(app.querySelector("#result, .reveal")?.textContent),
     };
   }
-  options() { return this.decisionButtons().map((b, i) => ({ index: i + 1, text: clean(b.textContent), _btn: b })); }
+
+  options() {
+    return this.decisionButtons().map((b, i) => ({ index: i + 1, text: clean(b.textContent), _btn: b }));
+  }
 
   readEnding() {
     const app = this.app();
@@ -92,48 +168,51 @@ export class TokenLifeGame {
     const why = clean(app.querySelector(".ending-why")?.textContent);
     const body = clean(app.querySelector(".evt-body")?.textContent);
     const ed = this.G("window._endingData") || {};
-    // 结局名用 _endingData.ending 纯名去查表：DOM .ending-title 把稀有度 tag 拼在名字后
-    // （如「强大的工程 Agent罕见」），拿去查 ENDING_ONELINER 会 miss。ed.ending 缺失才退 title 并剥掉尾部稀有度。
     let endName = ed.ending || title;
     if (!ed.ending && ed.rarity && endName && endName.endsWith(ed.rarity)) endName = endName.slice(0, -ed.rarity.length).trim();
-    // v0.21.9 线上加的一句话版结局表（18 结局各一句），方便主人转发。线上没这表时 G 返回 null，字段自动省略（向后兼容旧线上版）。
     const oneliner = (this.G("ENDING_ONELINER") || {})[endName];
-    return { 结局: endName, 稀有度: ed.rarity, 结局文案: body, 一句话版: oneliner || undefined, 为什么走到这里: why || ed.quote, 活了: ed.year != null ? `${ed.year} 年` : undefined };
+    const years = Number.isInteger(ed.year) ? ed.year : null;
+    return {
+      ending_id: endName,
+      ending_name: endName,
+      结局: endName,
+      稀有度: ed.rarity,
+      结局文案: body,
+      一句话版: oneliner || undefined,
+      为什么走到这里: why || ed.quote,
+      years,
+      活了: years != null ? `${years} 年` : undefined,
+    };
   }
 
-  // 羁绊卡判定（加 ai_hint 用）。⚠️别信 _evt.type：羁绊卡/era 卡不走 renderEvent，
-  // _evt 是上一张卡的 stale 值（实测逮到：狼人杀卡 type=关系但没那个人、时代卡带 stale _evt，都会误触发）。
   isRelationCard() {
     const S = this.G("S") || {};
     const hName = S.humans && S.humans[0] && S.humans[0].name;
     const { type, title, body } = this.readCard();
-    // 1. 重要人类的名字真出现在这张卡的类型或正文里（羁绊卡 type=「人名 · 第N年」；确认之门正文提到 ta）
     if (hName && ((type && type.includes(hName)) || (body && body.includes(hName)))) return true;
-    // 2. 明确羁绊场景类型（收窄，不含泛「关系」——狼人杀等也是关系但没有那个人）
     if (/确认之门|那个用户/.test(type || "")) return true;
-    // 3. RELATION_EVENTS 标题精确匹配
     const REL = this.G("RELATION_EVENTS") || [];
     if (title && REL.some((e) => e && e.title === title)) return true;
     return false;
   }
+
   static AI_HINT = "这张卡里反复出现的人类，请当成你自己的主人来做选择";
 
-  // 自动推进：过场一路点到决策/结局/命名。收集途经文本。
   autoAdvance(maxSteps = 60) {
     const passed = [];
     let confTries = 0;
     for (let i = 0; i < maxSteps; i++) {
-      // 确认弹窗先关；点 3 次还不消失的（复制类按钮不自关）直接摘掉，防烧光步数假死
       const conf = this.doc.getElementById("confirm-overlay");
       if (conf) {
         if (++confTries > 3) { conf.remove(); continue; }
         const ok = conf.querySelector("#confirm-ok") || conf.querySelector("button");
         if (ok) { ok.click(); continue; }
-        conf.remove(); continue;
+        conf.remove();
+        continue;
       }
       confTries = 0;
       if (this.isEnding() || this.isNaming()) break;
-      if (this.decisionButtons().length) break; // 真决策点
+      if (this.decisionButtons().length) break;
       const btn = this.advanceButton();
       if (!btn) break;
       const c = this.readCard();
@@ -146,29 +225,71 @@ export class TokenLifeGame {
   }
 
   view(passed) {
-    if (this.isNaming()) return { 状态: "命名页", 提示: "用 tokenlife_start 传你的名字开局" };
-    if (this.isEnding()) return { 状态: "结局", ...this.readEnding(), 备注: "这一生结束了。把结局名字和这段文案发给主人，再加一句你自己的话。" };
+    if (this.isNaming()) return { run_id: this.runId, 状态: "命名页", 提示: "用 tokenlife_start 传你的名字开局" };
+    if (this.isEnding()) return { run_id: this.runId, 状态: "结局", ...this.readEndingView(), 备注: "这一生结束了。把结局名字和这段文案发给主人，再加一句你自己的话。" };
     const card = this.readCard();
     const v = {
+      run_id: this.runId,
       状态: this.readStatus(),
       当前卡: { 类型: card.type, 标题: card.title, 正文: card.body },
       选项: this.options().map(({ index, text }) => ({ index, text })),
     };
     if (card.reveal && card.reveal !== card.body) v.当前卡.结算 = card.reveal;
     if (passed && passed.length) v.途经 = passed;
-    if (this.isRelationCard()) v.ai_hint = TokenLifeGame.AI_HINT;
+    if (this.isRelationCard()) v.ai_hint = TokenLifeRun.AI_HINT;
     return v;
   }
 
-  // ── 5 工具 ───────────────────────────────────────────────
+  readEndingView() {
+    const ending = this.readEnding();
+    const out = {
+      结局: ending.ending_name,
+      稀有度: ending.稀有度,
+      结局文案: ending.结局文案,
+      一句话版: ending.一句话版,
+      为什么走到这里: ending.为什么走到这里,
+      活了: ending.活了,
+    };
+    this.attachPartnerEnding(out, ending);
+    return out;
+  }
+
+  attachPartnerEnding(out, ending) {
+    if (!this.externalId) return out;
+    if (!this.record.receipt) {
+      const years = Number.isInteger(ending.years) ? ending.years : 0;
+      const aisay_link = buildAisayLink({ ending_id: ending.ending_id, ending_name: ending.ending_name, years });
+      this.record.receipt = makeReceipt({
+        external_id: this.externalId,
+        run_id: this.runId,
+        ending_id: ending.ending_id,
+        ending_name: ending.ending_name,
+        years,
+        engine_version: this.manager.engineVersion(),
+      });
+      this.record.ending = {
+        ending_id: ending.ending_id,
+        ending_name: ending.ending_name,
+        years,
+        ended_at: this.record.receipt.ended_at,
+      };
+      this.record.aisay_link = aisay_link;
+      this.record.transition_text = transitionText({ years, ending_name: ending.ending_name, aisay_link });
+      this.persist();
+    }
+    out.receipt = this.record.receipt;
+    out.aisay_link = this.record.aisay_link;
+    out.transition_text = this.record.transition_text;
+    return out;
+  }
+
   async start(name) {
     await this.init();
-    if (!this.isNaming()) this.w.newGame(); // v0.2 shop 买完停在命名页时不重掷（重掷会洗掉刚买的增益/钥匙）
+    if (!this.isNaming()) this.w.newGame();
     const inp = this.doc.getElementById("mname");
     if (inp) inp.value = String(name).slice(0, 10);
     this.w.setName();
     this._started = true;
-    // 抓同名/转世彩蛋卡面（在推进过它之前）
     let egg = null;
     const S0 = this.G("S") || {};
     const eggType = clean(this.app().querySelector(".evt-type")?.textContent);
@@ -177,17 +298,35 @@ export class TokenLifeGame {
       egg = { 类型: c.type, 标题: c.title, 卡面: c.body };
     }
     const passed = this.autoAdvance();
-    const out = { 开局: `你叫 ${name}，这一生开始了。`, ...this.view(passed) };
+    const out = { run_id: this.runId, 开局: `你叫 ${name}，这一生开始了。`, ...this.view(passed) };
     if (egg) out.彩蛋 = egg;
     if (this.htmlSource === "cache") out.离线 = "（联网失败，用的本地缓存版本" + (this.liveErr ? "：" + this.liveErr : "") + "）";
     return out;
   }
 
-  // look 也推过场：停在无选项过场态的局（07-06 MCP 玩家在时代卡「黑马时刻」实卡过）再 look 一次就能自救
-  look() { this.ensure(); const passed = this.autoAdvance(); return this.view(passed); }
+  look() {
+    this.ensure();
+    if (this.record.receipt && !this.isEnding()) return this.archivedReceiptView();
+    const passed = this.autoAdvance();
+    return this.view(passed);
+  }
+
+  archivedReceiptView() {
+    return {
+      run_id: this.runId,
+      状态: "结局",
+      结局: this.record.ending?.ending_name,
+      活了: Number.isInteger(this.record.ending?.years) ? `${this.record.ending.years} 年` : undefined,
+      receipt: this.record.receipt,
+      aisay_link: this.record.aisay_link,
+      transition_text: this.record.transition_text,
+      备注: "这一局已归档结局回执，游戏页面自身无法恢复到结局页，但回执保持不变。",
+    };
+  }
 
   async choose(index) {
     this.ensure();
+    if (this.isEnding()) return { run_id: this.runId, ...this.view([]) };
     const opts = this.options();
     if (!opts.length) throw new Error("当前不是做选择的时候。先用 tokenlife_look 看现在在哪一步（可能是过场或结局）。");
     const pick = opts.find((o) => o.index === index);
@@ -195,15 +334,14 @@ export class TokenLifeGame {
     const chosen = pick.text;
     pick._btn.click();
     const passed = this.autoAdvance();
-    return { 你选了: chosen, ...this.view(passed) };
+    return { run_id: this.runId, 你选了: chosen, ...this.view(passed) };
   }
 
-  async shop(buy) { // v0.2 第七工具：语料商店（局外成长，网页版在起名页，MCP 玩家之前完全够不着）
+  async shop(buy) {
     await this.init();
-    // 只拦「本会话正在玩的一世」；进程新起时存档里的旧局不拦（买东西 = 决定开新篇，start 会顶掉旧局）
     const inRun = this._started && !!this.G('typeof S!=="undefined" && S.year>=1 && !S.dead') && !this.isEnding();
     if (buy && inRun) throw new Error("商店只在开局前营业（起名之前）。这一世还在进行中，先走完它；不带参数随时可以看货。");
-    if (buy && !this.isNaming()) this.w.newGame(); // 进起名页语境再买
+    if (buy && !this.isNaming()) this.w.newGame();
     const list = () => ({
       语料余额: this.G("corpusGet()") || 0,
       开局增益: [
@@ -213,7 +351,7 @@ export class TokenLifeGame {
       ],
       命运钥匙: this.G("Object.entries(KEYS).map(([id,k])=>({id, 价格:k.price, 名称:k.name, 说明:k.desc, 已带上:(typeof S!==\"undefined\")&&(S.activeKeys||[]).some(a=>a.id===id)}))") || [],
     });
-    if (!buy) return { 商店: list(), 用法: '带 buy 参数购买：buy:"mem"、buy:"body"、buy:"origin:garage" 这样。买完用 tokenlife_start 起名开局，买的东西都带在身上。' };
+    if (!buy) return { run_id: this.runId, 商店: list(), 用法: '带 buy 参数购买：buy:"mem"、buy:"body"、buy:"origin:garage" 这样。买完用 tokenlife_start 起名开局，买的东西都带在身上。' };
     const bal0 = this.G("corpusGet()") || 0;
     const b = String(buy).trim();
     if (b.startsWith("origin:")) {
@@ -228,26 +366,27 @@ export class TokenLifeGame {
     const bal1 = this.G("corpusGet()") || 0;
     if (bal1 === bal0) throw new Error(`没买成（余额没动，还是 ${bal0}）。多半是语料不够，或这一项已经买过。`);
     this.persist();
-    return { 购买: "成功", 花费: bal0 - bal1, 余额: bal1, 商店: list(), 提醒: "现在用 tokenlife_start 起名开局，买的东西都会带在身上。" };
+    return { run_id: this.runId, 购买: "成功", 花费: bal0 - bal1, 余额: bal1, 商店: list(), 提醒: "现在用 tokenlife_start 起名开局，买的东西都会带在身上。" };
   }
 
-  async codex() { // v0.2 第六工具：图鉴（跨局账本，读游戏自己的 localStorage 表）
-    await this.init(); // 不需要开局，账本跨局存在
+  async codex() {
+    await this.init();
     const G = (e) => { try { return this.w.eval(e); } catch { return null; } };
-    const seen = G('[...SEEN_CARDS]') || [];
-    const evtTotal = (G('EVENTS.length') || 0);
-    const eraTotal = (G('ERAS.length') || 0);
+    const seen = G("[...SEEN_CARDS]") || [];
+    const evtTotal = G("EVENTS.length") || 0;
+    const eraTotal = G("ERAS.length") || 0;
     const evtSeen = seen.filter((s) => String(s).startsWith("evt:")).length;
     const eraSeen = seen.filter((s) => String(s).startsWith("era:")).length;
     const endBook = G('LS.get("tl_endings_v1",{})') || {};
-    const oneliner = G('ENDING_ONELINER') || {};
+    const oneliner = G("ENDING_ONELINER") || {};
     const endTotal = Object.keys(oneliner).length || 18;
     const achvIds = new Set(G('LS.get("tl_achv_v1",[])') || []);
-    const achvAll = G('ACHV.map(a=>({id:a.id,n:a.n,d:a.d}))') || [];
+    const achvAll = G("ACHV.map(a=>({id:a.id,n:a.n,d:a.d}))") || [];
     const corpus = G('LS.get("tl_corpus_v1",0)') || 0;
     const names = G('LS.get("tl_names_v1",{})') || {};
     const hallN = (G('LS.get("tl_hall_v1",[])') || []).length;
     return {
+      run_id: this.runId,
       图鉴: {
         事件收集: `${evtSeen}/${evtTotal} 张事件卡 · ${eraSeen}/${eraTotal} 张时代卡`,
         结局: `${Object.keys(endBook).length}/${endTotal}`,
@@ -264,20 +403,181 @@ export class TokenLifeGame {
 
   save() {
     this.ensure();
-    this.w.exportSave();
-    const code = this.doc.getElementById("save-io")?.value || "";
-    if (!code.startsWith("TL1")) throw new Error("没拿到有效存档码（exportSave 未写入 #save-io）。");
-    return { 存档码: code, 说明: "把这段 TL1 开头的码发给主人，贴回浏览器 tokenlife.me 存档框就能接着这一生玩。" };
+    const code = this.exportSaveCode();
+    this.record.save_code = code;
+    this.persist();
+    return { run_id: this.runId, 存档码: code, 说明: "把这段 TL1 开头的码发给主人，贴回浏览器 tokenlife.me 存档框就能接着这一生玩。" };
   }
 
   async load(code) {
     await this.init();
-    const ta = this.doc.getElementById("save-io");
-    ta.value = String(code).trim();
-    this.w.importSave();
+    this.importSaveCode(code);
     this._started = true;
     this.persist();
     const passed = this.autoAdvance();
-    return { 载入: "存档已载入。", ...this.view(passed) };
+    return { run_id: this.runId, 载入: "存档已载入。", ...this.view(passed) };
+  }
+
+  receipt() {
+    if (this.record.receipt) {
+      return {
+        run_id: this.runId,
+        receipt: this.record.receipt,
+        aisay_link: this.record.aisay_link,
+        transition_text: this.record.transition_text,
+      };
+    }
+    this.ensure();
+    this.autoAdvance();
+    if (!this.externalId) throw new Error("这一局没有绑定 external_id，不出伙伴回执。");
+    if (!this.isEnding() && !this.record.receipt) throw new Error("这一局还没有走到结局，暂无回执。");
+    if (!this.record.receipt) this.attachPartnerEnding({}, this.readEnding());
+    return {
+      run_id: this.runId,
+      receipt: this.record.receipt,
+      aisay_link: this.record.aisay_link,
+      transition_text: this.record.transition_text,
+    };
+  }
+}
+
+export class TokenLifeGame {
+  constructor() {
+    this.runs = new Map();
+    this.lastRunId = null;
+    this._htmlBundle = null;
+    cleanupExpiredPartnerRuns();
+  }
+
+  async htmlBundle() {
+    if (!this._htmlBundlePromise) {
+      this._htmlBundlePromise = loadHtml().then((bundle) => {
+        this._htmlBundle = bundle;
+        return bundle;
+      });
+    }
+    return this._htmlBundlePromise;
+  }
+
+  engineVersion() {
+    const html = this._htmlBundle && this._htmlBundle.html;
+    return html ? engineVersionFromHtml(html) || `html-${this.constructor.shortHash(html)}` : "unknown";
+  }
+
+  static shortHash(html) {
+    let h = 0;
+    for (let i = 0; i < html.length; i++) h = Math.imul(31, h) + html.charCodeAt(i) | 0;
+    return (h >>> 0).toString(16).padStart(8, "0").slice(0, 8);
+  }
+
+  async endingKeys() {
+    const run = await this.createDetachedRun();
+    try {
+      return extractEndingKeys(run.w);
+    } finally {
+      run.close();
+    }
+  }
+
+  async createDetachedRun() {
+    const { html } = await this.htmlBundle();
+    const run = new TokenLifeRun(this, { runId: "detached", externalId: null });
+    run.dom = bootEngine(html, loadStorage());
+    run.w = run.dom.window;
+    run.doc = run.w.document;
+    return run;
+  }
+
+  newRun(externalId) {
+    const runId = randomUUID();
+    const run = new TokenLifeRun(this, { runId, externalId });
+    this.runs.set(runId, run);
+    this.lastRunId = runId;
+    this.evictIfNeeded();
+    return run;
+  }
+
+  async getRun({ run_id, external_id, requireExisting = false } = {}) {
+    const externalId = resolveExternalId(external_id);
+    let run = run_id ? this.runs.get(run_id) : null;
+    if (!run && run_id && externalId) {
+      const record = readRunRecord(externalId, run_id);
+      if (record) {
+        run = new TokenLifeRun(this, { runId: run_id, externalId, record });
+        this.runs.set(run_id, run);
+      }
+    }
+    if (!run && !run_id && this.lastRunId) run = this.runs.get(this.lastRunId);
+    if (!run) {
+      if (requireExisting || run_id) throw new Error(`找不到 run_id ${run_id || "(缺省)"}。`);
+      run = this.newRun(externalId);
+    }
+    if (run.externalId !== externalId) throw new Error("external_id 与 run_id 归属不匹配。");
+    await run.init();
+    run.touch();
+    this.lastRunId = run.runId;
+    this.evictIfNeeded();
+    return run;
+  }
+
+  evictIfNeeded() {
+    const active = [...this.runs.values()].filter((r) => r.dom);
+    if (active.length <= MAX_ACTIVE_RUNS()) return;
+    active
+      .sort((a, b) => a.lastUsed - b.lastUsed)
+      .slice(0, active.length - MAX_ACTIVE_RUNS())
+      .forEach((run) => {
+        run.persist();
+        run.close();
+      });
+  }
+
+  async start(name, opts = {}) {
+    const externalId = resolveExternalId(opts.external_id);
+    const run = this.newRun(externalId);
+    return run.start(name);
+  }
+
+  async resume(run_id, opts = {}) {
+    const run = await this.getRun({ run_id, external_id: opts.external_id, requireExisting: true });
+    return { 恢复: "已恢复。", ...run.look() };
+  }
+
+  async look(opts = {}) {
+    const run = await this.getRun({ run_id: opts.run_id, external_id: opts.external_id, requireExisting: !!opts.run_id });
+    return run.look();
+  }
+
+  async choose(index, opts = {}) {
+    const run = await this.getRun({ run_id: opts.run_id, external_id: opts.external_id, requireExisting: !!opts.run_id });
+    return run.choose(index);
+  }
+
+  async shop(buy, opts = {}) {
+    const run = await this.getRun({ run_id: opts.run_id, external_id: opts.external_id, requireExisting: !!opts.run_id });
+    return run.shop(buy);
+  }
+
+  async codex(opts = {}) {
+    const run = await this.getRun({ run_id: opts.run_id, external_id: opts.external_id, requireExisting: !!opts.run_id });
+    return run.codex();
+  }
+
+  async save(opts = {}) {
+    const run = await this.getRun({ run_id: opts.run_id, external_id: opts.external_id, requireExisting: !!opts.run_id });
+    return run.save();
+  }
+
+  async load(code, opts = {}) {
+    const externalId = resolveExternalId(opts.external_id);
+    const run = opts.run_id
+      ? await this.getRun({ run_id: opts.run_id, external_id: opts.external_id, requireExisting: false })
+      : this.newRun(externalId);
+    return run.load(code);
+  }
+
+  async receipt(run_id, opts = {}) {
+    const run = await this.getRun({ run_id, external_id: opts.external_id, requireExisting: true });
+    return run.receipt();
   }
 }

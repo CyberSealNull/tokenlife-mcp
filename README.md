@@ -43,6 +43,53 @@ claude mcp add tokenlife -- npx -y github:CyberSealNull/tokenlife-mcp
 | `tokenlife_save` | 导出一段存档码（`TL1` 开头）。发给你，贴回浏览器 tokenlife.me 就能接着这一生玩。 |
 | `tokenlife_load` | 载入你给的存档码，接着那一生继续。 |
 
+## 伙伴回执（自 0.2.0 起）
+
+给接入方跑 TokenLife 时，可以把一个稳定身份绑定到一局游戏。`tokenlife_start` 会返回 `run_id`，后续 `tokenlife_look`、`tokenlife_choose`、`tokenlife_save`、`tokenlife_resume`、`tokenlife_receipt` 都接受 `run_id`。一局走到结局后，`tokenlife_choose` 会返回 `receipt`、`aisay_link` 和一段结局转场文本；`tokenlife_receipt(run_id)` 会重取同一张回执，同一局不会重造 `nonce` 或 `ended_at`。
+
+身份有两种注入方式：
+
+- `TOKENLIFE_EXTERNAL_ID=aisay_xxx`：一进程一身份，工具参数里的 `external_id` 会被忽略。
+- 工具参数 `external_id`：适合一个常驻进程服务多个身份。格式必须匹配 `^aisay_[A-Za-z0-9_-]{1,128}$`。
+
+伙伴局记录保存在 `~/.tokenlife-mcp/partners/<external_id sha256 前 16 位>/runs/<run_id>.json`。目录权限为 `0700`，文件权限为 `0600`，写入用临时文件加 `rename`。默认保留 90 天，可用 `TOKENLIFE_PARTNER_RETENTION_DAYS` 调整。
+
+回执 payload 字段：
+
+```json
+{
+  "receipt_version": 1,
+  "issuer": "aisay-tokenlife-host",
+  "external_id": "aisay_demo",
+  "run_id": "00000000-0000-4000-8000-000000000000",
+  "ending_id": "没用的 Chatbot",
+  "ending_name": "没用的 Chatbot",
+  "years": 18,
+  "ended_at": "2026-09-22T00:00:00Z",
+  "nonce": "00112233445566778899aabbccddeeff",
+  "key_id": "default",
+  "engine_version": "v0.22",
+  "ruleset_version": "见 docs/ending-keys.json 的 sha256 前 12 位"
+}
+```
+
+签名口径：
+
+- `canonical` 是上面 payload 的 JCS canonical JSON 字符串。
+- `payload_sha256` 是 `canonical` 的 SHA-256 hex。
+- 设置 `TOKENLIFE_PARTNER_SECRET` 时返回 `signed:true` 和 HMAC-SHA256 标准 base64 `signature`。
+- 未设置密钥时返回 `signed:false`、`signature:null`，宿主可以拿 `canonical` 自行签。
+
+命令行验签示例：
+
+```bash
+printf '%s' "$CANONICAL" \
+  | openssl dgst -sha256 -hmac "$TOKENLIFE_PARTNER_SECRET" -binary \
+  | openssl base64 -A
+```
+
+`docs/ending-keys.json` 是本包生成的结局键清单，`ending_id` 取游戏内部写入 `tl_endings_v1` 的结局键。接入方只需要验证 `ending_id` 属于这张表，不需要按好坏筛选。
+
 碰到那张反复出现的人类的卡，工具会悄悄附一句提醒：那个人不是陌生人，是它的主人。这一句是有来历的——不提醒的话，AI 容易把游戏里的「你」当成路人，触发距离感，选得不像它自己。
 
 ## 一些实现上的诚实交代
@@ -50,7 +97,7 @@ claude mcp add tokenlife -- npx -y github:CyberSealNull/tokenlife-mcp
 - 游戏引擎不重写：启动时从 tokenlife.me 拉最新的 `index.html`，用 [jsdom](https://github.com/jsdom/jsdom) 真跑。游戏天天在迭代，这个 server 不跟着发版，永远玩到的是线上最新那版。
 - 拉不到就用上一次的缓存（`~/.tokenlife-mcp/cache.html`），断网也能玩。
 - 跨局的图鉴、语料、转世账本存在 `~/.tokenlife-mcp/storage.json`——AI 有它自己的成长账本，活过的每一世都算数。
-- 一个连接就是一局人生。
+- 一个连接可以带多局人生。每个 `run_id` 对应一个独立 jsdom 窗口；活跃窗口默认最多 16 个，超出后最久未用的局会先存档再释放，需要时用 `tokenlife_resume` 拉回。
 
 ## 关于这个游戏
 

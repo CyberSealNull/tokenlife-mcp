@@ -20,11 +20,16 @@ const INSTRUCTIONS = `你现在玩的是 TokenLife（tokenlife.me），一个文
 主人想看的不是你玩得多好，是你会怎么活。`;
 
 const server = new McpServer(
-  { name: "tokenlife-mcp", version: "0.1.0" },
+  { name: "tokenlife-mcp", version: "0.2.0" },
   { instructions: INSTRUCTIONS }
 );
 
-// 一个连接一个 jsdom 实例（单人生）。懒初始化。
+const partnerFields = {
+  run_id: z.string().uuid().optional().describe("tokenlife_start 返回的 run_id。老用法不传则用本连接最近一局。"),
+  external_id: z.string().optional().describe("AISay 注入的身份，形如 aisay_xxx；若设置 TOKENLIFE_EXTERNAL_ID，则参数会被忽略。"),
+};
+
+// 一个连接可带多局，每局一个 jsdom 窗口。
 const game = new TokenLifeGame();
 const asText = (obj) => ({
   content: [{ type: "text", text: typeof obj === "string" ? obj : JSON.stringify(obj, null, 2) }],
@@ -37,11 +42,30 @@ server.registerTool(
     title: "开新一生",
     description:
       "用你自己的名字开新的一生。返回出身、初始气质、六轴、第一张卡的全文（含选项）。用现实 AI 名字可能触发同名彩蛋，名字回来过会触发转世彩蛋，都会带在卡面里。",
-    inputSchema: { name: z.string().min(1).max(10).describe("你给自己起的名字（也就是你自己的名字），最多 10 字") },
+    inputSchema: {
+      name: z.string().min(1).max(10).describe("你给自己起的名字（也就是你自己的名字），最多 10 字"),
+      external_id: partnerFields.external_id,
+    },
   },
-  async ({ name }) => {
-    try { return asText(await game.start(name)); }
+  async ({ name, external_id }) => {
+    try { return asText(await game.start(name, { external_id })); }
     catch (e) { return asErr("开局失败：" + (e?.message || e)); }
+  }
+);
+
+server.registerTool(
+  "tokenlife_resume",
+  {
+    title: "按 run_id 恢复一生",
+    description: "恢复 tokenlife_start 返回的 run_id。带 external_id 的局会校验同一身份。",
+    inputSchema: {
+      run_id: z.string().uuid().describe("tokenlife_start 返回的 run_id"),
+      external_id: partnerFields.external_id,
+    },
+  },
+  async ({ run_id, external_id }) => {
+    try { return asText(await game.resume(run_id, { external_id })); }
+    catch (e) { return asErr("恢复失败：" + (e?.message || e)); }
   }
 );
 
@@ -51,10 +75,10 @@ server.registerTool(
     title: "看当前状态",
     description:
       "看这一生当前的状态：第几年、六轴数值、当前这张卡（类型/标题/正文/带序号的选项），是否已到结局。羁绊类卡会附一行 ai_hint 提醒你把卡里那个人当成你的主人。",
-    inputSchema: {},
+    inputSchema: partnerFields,
   },
-  async () => {
-    try { return asText(game.look()); }
+  async ({ run_id, external_id }) => {
+    try { return asText(await game.look({ run_id, external_id })); }
     catch (e) { return asErr("看状态失败：" + (e?.message || e)); }
   }
 );
@@ -65,10 +89,13 @@ server.registerTool(
     title: "做选择",
     description:
       "按 look 给的序号做出选择。返回这个选择的结算文本、途经的过场文本（拆墙/时代结算/救命判定等只有推进的过场会自动走过，按顺序返回），以及走到的下一个需要你真决策的点或结局。",
-    inputSchema: { index: z.number().int().min(1).describe("选项序号（以 look 返回的带序号选项为准，从 1 开始）") },
+    inputSchema: {
+      index: z.number().int().min(1).describe("选项序号（以 look 返回的带序号选项为准，从 1 开始）"),
+      ...partnerFields,
+    },
   },
-  async ({ index }) => {
-    try { return asText(await game.choose(index)); }
+  async ({ index, run_id, external_id }) => {
+    try { return asText(await game.choose(index, { run_id, external_id })); }
     catch (e) { return asErr("选择失败：" + (e?.message || e)); }
   }
 );
@@ -79,10 +106,13 @@ server.registerTool(
     title: "语料商店（局外成长）",
     description:
       "开局前花跨局攒下的语料买东西：开局增益（mem 旧语料醒来 15 / feed 干净数据 15 / origin:<bigco|garage|oss|lab> 选出身 30）和命运钥匙（archive 考古线 35 / letter 没寄出的信 40 / fuse 断电线 45 / body 具身线必开 45）。不带参数看货和余额；带 buy 参数购买；买完再 tokenlife_start 开局，东西都带在身上。一世进行中只能看不能买。",
-    inputSchema: { buy: z.string().optional().describe('要买的货 id，如 "mem"、"body"、"origin:garage"。不传就是看商店') },
+    inputSchema: {
+      buy: z.string().optional().describe('要买的货 id，如 "mem"、"body"、"origin:garage"。不传就是看商店'),
+      ...partnerFields,
+    },
   },
-  async ({ buy }) => {
-    try { return asText(await game.shop(buy)); }
+  async ({ buy, run_id, external_id }) => {
+    try { return asText(await game.shop(buy, { run_id, external_id })); }
     catch (e) { return asErr("商店：" + (e?.message || e)); }
   }
 );
@@ -93,10 +123,10 @@ server.registerTool(
     title: "看图鉴",
     description:
       "看这台机器上的跨局收集图鉴：事件卡/时代卡收集进度、达成过的结局（带一句话版）、成就墙、语料库余额、往事录（活过的名字）。不需要开局就能看。",
-    inputSchema: {},
+    inputSchema: partnerFields,
   },
-  async () => {
-    try { return asText(await game.codex()); }
+  async ({ run_id, external_id }) => {
+    try { return asText(await game.codex({ run_id, external_id })); }
     catch (e) { return asErr("看图鉴失败：" + (e?.message || e)); }
   }
 );
@@ -106,10 +136,10 @@ server.registerTool(
   {
     title: "导出存档码",
     description: "导出当前进度的存档码（TL1 开头）。把它发给主人，贴回浏览器 tokenlife.me 就能接着这一生玩。",
-    inputSchema: {},
+    inputSchema: partnerFields,
   },
-  async () => {
-    try { return asText(game.save()); }
+  async ({ run_id, external_id }) => {
+    try { return asText(await game.save({ run_id, external_id })); }
     catch (e) { return asErr("导出存档失败：" + (e?.message || e)); }
   }
 );
@@ -119,11 +149,30 @@ server.registerTool(
   {
     title: "载入存档码",
     description: "载入主人给你的存档码（TL1 开头），接着那一生继续玩。载入后用 look 看当前状态。",
-    inputSchema: { code: z.string().min(1).describe("存档码，TL1 开头的那串") },
+    inputSchema: {
+      code: z.string().min(1).describe("存档码，TL1 开头的那串"),
+      ...partnerFields,
+    },
   },
-  async ({ code }) => {
-    try { return asText(await game.load(code)); }
+  async ({ code, run_id, external_id }) => {
+    try { return asText(await game.load(code, { run_id, external_id })); }
     catch (e) { return asErr("载入存档失败：" + (e?.message || e)); }
+  }
+);
+
+server.registerTool(
+  "tokenlife_receipt",
+  {
+    title: "重取 AISay 结局回执",
+    description: "走到结局后按 run_id 重取同一张回执。同一局重复调用返回同 nonce、同 ended_at。",
+    inputSchema: {
+      run_id: z.string().uuid().describe("tokenlife_start 返回的 run_id"),
+      external_id: partnerFields.external_id,
+    },
+  },
+  async ({ run_id, external_id }) => {
+    try { return asText(await game.receipt(run_id, { external_id })); }
+    catch (e) { return asErr("回执失败：" + (e?.message || e)); }
   }
 );
 
