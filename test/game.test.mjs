@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import fs, { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import fs, { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -36,6 +36,15 @@ function restoreEnv(oldEnv) {
 async function chooseFirstUntilEnding(game, run_id, external_id) {
   let out = await game.look({ run_id, external_id });
   for (let i = 0; i < 90 && out.状态 !== "结局"; i++) {
+    if (out.选项?.length) out = await game.choose(1, { run_id, external_id });
+    else out = await game.look({ run_id, external_id });
+  }
+  return out;
+}
+
+async function playSteps(game, run_id, external_id, steps) {
+  let out = await game.look({ run_id, external_id });
+  for (let i = 0; i < steps && out.状态 !== "结局"; i++) {
     if (out.选项?.length) out = await game.choose(1, { run_id, external_id });
     else out = await game.look({ run_id, external_id });
   }
@@ -93,6 +102,167 @@ test("ending receipt is persisted and repeated calls return the same bytes", asy
     assert.deepEqual(resumed.receipt, ending.receipt);
   } finally {
     restoreEnv(oldEnv);
+  }
+});
+
+test("a run imported with tokenlife_load never mints a receipt", async () => {
+  const loaded = await loadGameWithTempHome();
+  const { TokenLifeGame, oldEnv } = loaded;
+  try {
+    const game = new TokenLifeGame();
+    const seed = await game.start("源", { external_id: "aisay_seed_src" });
+    await playSteps(game, seed.run_id, "aisay_seed_src", 8);
+    const saved = await game.save({ run_id: seed.run_id, external_id: "aisay_seed_src" });
+    assert.ok(saved.存档码.startsWith("TL1"));
+
+    const imported = await game.load(saved.存档码, { external_id: "aisay_importer" });
+    const ending = await chooseFirstUntilEnding(game, imported.run_id, "aisay_importer");
+    assert.equal(ending.状态, "结局");
+    assert.equal(ending.receipt, null);
+    assert.match(ending.receipt_declined_reason, /tokenlife_load/);
+
+    // 链接跟转场照常给：链接是邀请不是证明。
+    assert.ok(ending.aisay_link.includes("source=mcp"));
+    assert.ok(ending.transition_text.includes(ending.aisay_link));
+
+    // 结局时间钉死一次，重复取同一条链接，不每次重算。
+    const lookAgain = await game.look({ run_id: imported.run_id, external_id: "aisay_importer" });
+    assert.equal(lookAgain.aisay_link, ending.aisay_link);
+
+    await assert.rejects(
+      () => game.receipt(imported.run_id, { external_id: "aisay_importer" }),
+      /tokenlife_load/,
+    );
+
+    const { runPath } = await import("../src/partner.mjs");
+    const record = JSON.parse(readFileSync(runPath("aisay_importer", imported.run_id), "utf8"));
+    assert.equal(record.receipt, null);
+    assert.equal(record.source, "load");
+  } finally {
+    restoreEnv(oldEnv);
+  }
+});
+
+test("the same save code cannot be traded for a receipt by loading it again", async () => {
+  const loaded = await loadGameWithTempHome();
+  const { TokenLifeGame, oldEnv } = loaded;
+  try {
+    const game = new TokenLifeGame();
+    const seed = await game.start("源二", { external_id: "aisay_replay_src" });
+    await playSteps(game, seed.run_id, "aisay_replay_src", 8);
+    const saved = await game.save({ run_id: seed.run_id, external_id: "aisay_replay_src" });
+
+    for (const attempt of [1, 2]) {
+      const imported = await game.load(saved.存档码, { external_id: "aisay_replay" });
+      const ending = await chooseFirstUntilEnding(game, imported.run_id, "aisay_replay");
+      assert.equal(ending.状态, "结局", `第 ${attempt} 次载入应走到结局`);
+      assert.equal(ending.receipt, null, `第 ${attempt} 次载入不应换出回执`);
+      await assert.rejects(
+        () => game.receipt(imported.run_id, { external_id: "aisay_replay" }),
+        /tokenlife_load/,
+      );
+    }
+  } finally {
+    restoreEnv(oldEnv);
+  }
+});
+
+test("loading a save code into an already started run revokes that run's ticket", async () => {
+  const loaded = await loadGameWithTempHome();
+  const { TokenLifeGame, oldEnv } = loaded;
+  try {
+    const game = new TokenLifeGame();
+    const seed = await game.start("源三", { external_id: "aisay_graft_src" });
+    await playSteps(game, seed.run_id, "aisay_graft_src", 8);
+    const saved = await game.save({ run_id: seed.run_id, external_id: "aisay_graft_src" });
+
+    const host = await game.start("寄主", { external_id: "aisay_graft" });
+    await playSteps(game, host.run_id, "aisay_graft", 3);
+    await game.load(saved.存档码, { run_id: host.run_id, external_id: "aisay_graft" });
+    const ending = await chooseFirstUntilEnding(game, host.run_id, "aisay_graft");
+    assert.equal(ending.状态, "结局");
+    assert.equal(ending.receipt, null);
+  } finally {
+    restoreEnv(oldEnv);
+  }
+});
+
+test("started runs still mint receipts after LRU eviction and resume", async () => {
+  const loaded = await loadGameWithTempHome();
+  const { TokenLifeGame, oldEnv } = loaded;
+  try {
+    const game = new TokenLifeGame();
+    const a = await game.start("甲活", { external_id: "aisay_evict_a" });
+    await playSteps(game, a.run_id, "aisay_evict_a", 4);
+    await game.start("乙活", { external_id: "aisay_evict_b" });
+    const c = await game.start("丙活", { external_id: "aisay_evict_c" });
+    // 淘汰只在下一次取局时结算，这一下把最久未用的甲挤出去。
+    await game.look({ run_id: c.run_id, external_id: "aisay_evict_c" });
+    // 断言写成布尔：dom 真没被淘汰时，直接比对象会把整个 JSDOM 铺进 diff 里。
+    assert.equal(game.runs.get(a.run_id).dom === null, true, "MAX_ACTIVE_RUNS=2 下甲应已被淘汰");
+
+    // 淘汰后重建走的是 importSaveCode（拿自己存的码），不能被当成外来存档。
+    const resumed = await game.resume(a.run_id, { external_id: "aisay_evict_a" });
+    assert.equal(resumed.run_id, a.run_id);
+    const ending = await chooseFirstUntilEnding(game, a.run_id, "aisay_evict_a");
+    assert.equal(ending.状态, "结局");
+    assert.ok(ending.receipt, "亲自开局的局在淘汰重建之后仍然要出回执");
+    assert.equal(ending.receipt.signed, true);
+    assert.equal(ending.receipt.run_id, a.run_id);
+  } finally {
+    restoreEnv(oldEnv);
+  }
+});
+
+test("ending link carries the same ended_at as the receipt", async () => {
+  const loaded = await loadGameWithTempHome();
+  const { TokenLifeGame, oldEnv } = loaded;
+  try {
+    const game = new TokenLifeGame();
+    const start = await game.start("戊", { external_id: "aisay_linktime" });
+    const ending = await chooseFirstUntilEnding(game, start.run_id, "aisay_linktime");
+    assert.equal(ending.状态, "结局");
+    const url = new URL(ending.aisay_link);
+    assert.equal(url.searchParams.get("ended_at"), ending.receipt.ended_at);
+    assert.equal(url.searchParams.get("years"), String(ending.receipt.years));
+    assert.equal(url.searchParams.get("ending_name"), ending.receipt.ending_name);
+    assert.equal(url.searchParams.get("ending_id"), ending.receipt.ending_id);
+    assert.equal(url.searchParams.get("source"), "mcp");
+
+    const again = await game.receipt(start.run_id, { external_id: "aisay_linktime" });
+    assert.equal(again.aisay_link, ending.aisay_link);
+    assert.equal(again.receipt.ended_at, ending.receipt.ended_at);
+  } finally {
+    restoreEnv(oldEnv);
+  }
+});
+
+test("cache.html is written 0600 whether or not it already exists", async () => {
+  const bigHtml = `<html><body>newGame tokenlife ${"x".repeat(60000)}</body></html>`;
+  const tempHome = join(tmpdir(), `tokenlife-mcp-perm-${process.pid}-${Date.now()}`);
+  mkdirSync(join(tempHome, ".tokenlife-mcp"), { recursive: true });
+  const oldHome = process.env.HOME;
+  const oldFetch = globalThis.fetch;
+  process.env.HOME = tempHome;
+  globalThis.fetch = async () => ({ ok: true, text: async () => bigHtml });
+  try {
+    const { loadHtml, CACHE_PATH } = await import(`../src/engine.mjs?perm=${Date.now()}-${++importCase}`);
+
+    // 形状一：缓存文件还不存在，新建。
+    assert.equal(existsSync(CACHE_PATH), false);
+    assert.equal((await loadHtml()).source, "live");
+    assert.equal(statSync(CACHE_PATH).mode & 0o777, 0o600);
+
+    // 形状二：文件已经在，且权限是松的。writeFileSync 的 mode 对已存在文件不生效，
+    // 只有显式 chmod 才收得回来，这一形状是真正会漏的那个。
+    chmodSync(CACHE_PATH, 0o644);
+    assert.equal(statSync(CACHE_PATH).mode & 0o777, 0o644);
+    assert.equal((await loadHtml()).source, "live");
+    assert.equal(statSync(CACHE_PATH).mode & 0o777, 0o600);
+  } finally {
+    globalThis.fetch = oldFetch;
+    if (oldHome === undefined) delete process.env.HOME;
+    else process.env.HOME = oldHome;
   }
 });
 

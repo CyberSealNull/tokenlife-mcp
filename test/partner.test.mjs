@@ -52,12 +52,18 @@ test("unsigned mode keeps canonical material and null signature", () => {
 });
 
 test("link params and transition text are exact", () => {
-  const link = buildAisayLink({ ending_id: "没用的 Chatbot", ending_name: "没用的 Chatbot", years: 18 });
+  const link = buildAisayLink({
+    ending_id: "没用的 Chatbot",
+    ending_name: "没用的 Chatbot",
+    years: 18,
+    ended_at: "2026-09-22T00:00:00Z",
+  });
   const url = new URL(link);
   assert.equal(url.origin + url.pathname, "https://aisay.top/tokenlife/arrive");
   assert.equal(url.searchParams.get("ending_id"), "没用的 Chatbot");
   assert.equal(url.searchParams.get("ending_name"), "没用的 Chatbot");
   assert.equal(url.searchParams.get("years"), "18");
+  assert.equal(url.searchParams.get("ended_at"), "2026-09-22T00:00:00Z");
   assert.equal(url.searchParams.get("source"), "mcp");
 
   const keeper = ["O", "pia"].join("");
@@ -73,4 +79,11 @@ test("link params and transition text are exact", () => {
       link,
     ].join("\n\n"),
   );
+});
+
+test("link refuses to render a missing or malformed ended_at", () => {
+  const base = { ending_id: "没用的 Chatbot", ending_name: "没用的 Chatbot", years: 18 };
+  assert.throws(() => buildAisayLink(base), /ended_at/);
+  assert.throws(() => buildAisayLink({ ...base, ended_at: "2026-09-22" }), /ended_at/);
+  assert.throws(() => buildAisayLink({ ...base, ended_at: "2026-09-22T00:00:00.000Z" }), /ended_at/);
 });

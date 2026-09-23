@@ -7,6 +7,7 @@ import {
   makeReceipt,
   partnerStoragePath,
   readRunRecord,
+  RECEIPT_DECLINED_LOADED,
   resolveExternalId,
   transitionText,
   utcSecond,
@@ -28,6 +29,9 @@ class TokenLifeRun {
       run_id: runId,
       created_at: utcSecond(),
       updated_at: utcSecond(),
+      // 这一局怎么来的：start 是本进程亲自开的，load 是拿别处的存档码接上的。
+      // 只有 start 能出回执，认不出来源的一律当不能出，宁可少发不可错发。
+      source: null,
       save_code: null,
       receipt: null,
     };
@@ -256,30 +260,51 @@ class TokenLifeRun {
     return out;
   }
 
+  // 回执只发给本进程里 tokenlife_start 亲自活到结局的局。
+  // 认不出来源的老记录一律判为不能出，宁可少发不可错发。
+  receiptEligible() {
+    return this.record.source === "start";
+  }
+
   attachPartnerEnding(out, ending) {
     if (!this.externalId) return out;
-    if (!this.record.receipt) {
+    if (!this.record.ending) {
+      // 结局这一刻把时间钉死，回执与 AISay 链接共用同一个 ended_at；
+      // 不出回执的局也据此拿到一条稳定的链接，重复取不会变。
       const years = Number.isInteger(ending.years) ? ending.years : 0;
-      const aisay_link = buildAisayLink({ ending_id: ending.ending_id, ending_name: ending.ending_name, years });
-      this.record.receipt = makeReceipt({
-        external_id: this.externalId,
-        run_id: this.runId,
-        ending_id: ending.ending_id,
-        ending_name: ending.ending_name,
-        years,
-        engine_version: this.manager.engineVersion(),
-      });
+      const ended_at = utcSecond();
       this.record.ending = {
         ending_id: ending.ending_id,
         ending_name: ending.ending_name,
         years,
-        ended_at: this.record.receipt.ended_at,
+        ended_at,
       };
-      this.record.aisay_link = aisay_link;
-      this.record.transition_text = transitionText({ years, ending_name: ending.ending_name, aisay_link });
+      this.record.aisay_link = buildAisayLink({
+        ending_id: ending.ending_id,
+        ending_name: ending.ending_name,
+        years,
+        ended_at,
+      });
+      this.record.transition_text = transitionText({
+        years,
+        ending_name: ending.ending_name,
+        aisay_link: this.record.aisay_link,
+      });
+      if (this.receiptEligible()) {
+        this.record.receipt = makeReceipt({
+          external_id: this.externalId,
+          run_id: this.runId,
+          ending_id: ending.ending_id,
+          ending_name: ending.ending_name,
+          years,
+          engine_version: this.manager.engineVersion(),
+          ended_at,
+        });
+      }
       this.persist();
     }
-    out.receipt = this.record.receipt;
+    out.receipt = this.record.receipt || null;
+    if (!this.record.receipt) out.receipt_declined_reason = RECEIPT_DECLINED_LOADED;
     out.aisay_link = this.record.aisay_link;
     out.transition_text = this.record.transition_text;
     return out;
@@ -292,6 +317,7 @@ class TokenLifeRun {
     if (inp) inp.value = String(name).slice(0, 10);
     this.w.setName();
     this._started = true;
+    this.record.source = "start";
     let egg = null;
     const S0 = this.G("S") || {};
     const eggType = clean(this.app().querySelector(".evt-type")?.textContent);
@@ -413,6 +439,9 @@ class TokenLifeRun {
 
   async load(code) {
     await this.init();
+    // 标记打在这里，不打在 importSaveCode 里：那个函数也负责把自己存的局重新拉起来
+    // （init 里按 record.save_code 重建、LRU 淘汰后恢复都走它），打在那儿会误伤自己的局。
+    this.record.source = "load";
     this.importSaveCode(code);
     this._started = true;
     this.persist();
@@ -432,6 +461,7 @@ class TokenLifeRun {
     this.ensure();
     this.autoAdvance();
     if (!this.externalId) throw new Error("这一局没有绑定 external_id，不出伙伴回执。");
+    if (!this.receiptEligible()) throw new Error(RECEIPT_DECLINED_LOADED);
     if (!this.isEnding() && !this.record.receipt) throw new Error("这一局还没有走到结局，暂无回执。");
     if (!this.record.receipt) this.attachPartnerEnding({}, this.readEnding());
     return {

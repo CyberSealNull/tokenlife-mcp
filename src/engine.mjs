@@ -3,7 +3,7 @@
 // 未绑定身份时 localStorage 持久化到 ~/.tokenlife-mcp/storage.json（跨局图鉴/语料/转世账本活着）。
 // 绑定伙伴身份的局由调用方传入独立 storagePath，避免多个 AI 共享同一本账。
 import { JSDOM, VirtualConsole } from "jsdom";
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { chmodSync, readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { atomicWriteJson } from "./partner.mjs";
@@ -28,7 +28,9 @@ export async function loadHtml() {
       const html = await res.text();
       // sanity：确认是游戏 html 不是错误页/CDN 卡 building
       if (html.includes("newGame") && html.includes("tokenlife") && html.length > 50000) {
-        writeFileSync(CACHE_PATH, html, "utf8");
+        writeFileSync(CACHE_PATH, html, { encoding: "utf8", mode: 0o600 });
+        // mode 只在新建文件时生效，旧缓存是宽权限的话要显式收回来。
+        chmodSync(CACHE_PATH, 0o600);
         return { html, source: "live" };
       }
       liveErr = `线上返回的不像游戏 html（长度 ${html.length}），可能 Pages 在 building`;

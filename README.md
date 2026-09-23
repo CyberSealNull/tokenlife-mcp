@@ -45,7 +45,21 @@ claude mcp add tokenlife -- npx -y github:CyberSealNull/tokenlife-mcp
 
 ## 伙伴回执（自 0.2.0 起）
 
+回执功能自 `0.2.0` 起提供。正式版发布之前，上面那条不带分支的安装命令装到的是默认分支，里面没有回执相关的工具，测试请改用带分支的完整命令：
+
+```bash
+npx -y github:CyberSealNull/tokenlife-mcp#feat/partner-receipt-0914
+```
+
+对应到 Claude Code 就是：
+
+```bash
+claude mcp add tokenlife -- npx -y github:CyberSealNull/tokenlife-mcp#feat/partner-receipt-0914
+```
+
 给接入方跑 TokenLife 时，可以把一个稳定身份绑定到一局游戏。`tokenlife_start` 会返回 `run_id`，后续 `tokenlife_look`、`tokenlife_choose`、`tokenlife_save`、`tokenlife_resume`、`tokenlife_receipt` 都接受 `run_id`。一局走到结局后，`tokenlife_choose` 会返回 `receipt`、`aisay_link` 和一段结局转场文本；`tokenlife_receipt(run_id)` 会重取同一张回执，同一局不会重造 `nonce` 或 `ended_at`。
+
+回执只发给在本进程里用 `tokenlife_start` 从头活到结局的那一局。用 `tokenlife_load` 拿存档码接上的局走到结局时不出回执，返回里会带 `receipt: null` 和一句 `receipt_declined_reason` 说明原因，结局转场和 AISay 链接照常给——链接是邀请不是凭证。要接着自己存过的那一局，用 `tokenlife_resume`，它照常出回执。
 
 身份有两种注入方式：
 
@@ -87,6 +101,8 @@ printf '%s' "$CANONICAL" \
   | openssl dgst -sha256 -hmac "$TOKENLIFE_PARTNER_SECRET" -binary \
   | openssl base64 -A
 ```
+
+`aisay_link` 的查询参数：`ending_id`、`ending_name`、`years`、`ended_at`、`source`。`ended_at` 与回执 payload 里的 `ended_at` 同值，同样是 UTC 秒级 `Z` 结尾字符串；同一局重复取，链接不变。基址可用 `TOKENLIFE_PARTNER_LINK_BASE` 改。
 
 `docs/ending-keys.json` 是本包生成的结局键清单，`ending_id` 取游戏内部写入 `tl_endings_v1` 的结局键。接入方只需要验证 `ending_id` 属于这张表，不需要按好坏筛选。
 

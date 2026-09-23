@@ -17,6 +17,12 @@ import { createHmac, createHash, randomBytes } from "node:crypto";
 export const EXTERNAL_ID_RE = /^aisay_[A-Za-z0-9_-]{1,128}$/;
 export const DEFAULT_LINK_BASE = "https://aisay.top/tokenlife/arrive";
 export const PARTNER_ROOT = join(homedir(), ".tokenlife-mcp", "partners");
+export const UTC_SECOND_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
+
+// 载入存档接上的局不出回执时，对接入方与 AI 说明原因的定稿话术。
+export const RECEIPT_DECLINED_LOADED =
+  "这一局是用 tokenlife_load 载入存档接上的，不出伙伴回执。回执只发给在本进程里用 tokenlife_start 从头活到结局的那一局；" +
+  "要接着自己存过的局，用 tokenlife_resume。结局转场和 AISay 链接照常给，链接是邀请不是凭证。";
 
 export function sha256Hex(input) {
   return createHash("sha256").update(input).digest("hex");
@@ -127,12 +133,15 @@ export function utcSecond(date = new Date()) {
   return date.toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
-export function buildAisayLink({ ending_id, ending_name, years }) {
+export function buildAisayLink({ ending_id, ending_name, years, ended_at }) {
+  // 缺时间就停，不把 "undefined" 当成一个结束时间发出去。
+  if (!UTC_SECOND_RE.test(ended_at || "")) throw new Error("建 AISay 链接要求 ended_at 是 UTC 秒级 Z 字符串。");
   const base = process.env.TOKENLIFE_PARTNER_LINK_BASE || DEFAULT_LINK_BASE;
   const url = new URL(base);
   url.searchParams.set("ending_id", ending_id);
   url.searchParams.set("ending_name", ending_name);
   url.searchParams.set("years", String(years));
+  url.searchParams.set("ended_at", ended_at);
   url.searchParams.set("source", "mcp");
   return url.toString();
 }
@@ -174,7 +183,7 @@ export function makeReceiptPayload({
   nonce = randomBytes(16).toString("hex"),
 }) {
   if (!Number.isInteger(years)) throw new Error("receipt years 必须是整数。");
-  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(ended_at)) throw new Error("ended_at 必须是 UTC 秒级 Z 字符串。");
+  if (!UTC_SECOND_RE.test(ended_at)) throw new Error("ended_at 必须是 UTC 秒级 Z 字符串。");
   return normalizeStrings({
     receipt_version: 1,
     issuer: process.env.TOKENLIFE_PARTNER_ISSUER || "aisay-tokenlife-host",
