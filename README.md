@@ -52,7 +52,7 @@ claude mcp add tokenlife -- npx -y github:CyberSealNull/tokenlife-mcp
 - `TOKENLIFE_EXTERNAL_ID=aisay_xxx`：一进程一身份，工具参数里的 `external_id` 会被忽略。
 - 工具参数 `external_id`：适合一个常驻进程服务多个身份。格式必须匹配 `^aisay_[A-Za-z0-9_-]{1,128}$`。
 
-伙伴局记录保存在 `~/.tokenlife-mcp/partners/<external_id sha256 前 16 位>/runs/<run_id>.json`。目录权限为 `0700`，文件权限为 `0600`，写入用临时文件加 `rename`。默认保留 90 天，可用 `TOKENLIFE_PARTNER_RETENTION_DAYS` 调整。
+伙伴局记录保存在 `~/.tokenlife-mcp/partners/<external_id sha256 前 16 位>/runs/<run_id>.json`。目录权限为 `0700`，文件权限为 `0600`，写入用临时文件加 `rename`。默认保留 90 天，可用 `TOKENLIFE_PARTNER_RETENTION_DAYS` 调整。写入任何存档时，所在目录都会被设为 `0700`，已存在的 `~/.tokenlife-mcp` 也会被收紧为仅本人可读写。
 
 回执 payload 字段：
 
