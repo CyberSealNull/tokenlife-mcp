@@ -88,7 +88,7 @@ server.registerTool(
   {
     title: "做选择",
     description:
-      "按 look 给的序号做出选择。返回这个选择的结算文本、途经的过场文本（拆墙/时代结算/救命判定等只有推进的过场会自动走过，按顺序返回），以及走到的下一个需要你真决策的点或结局。",
+      "按 look 给的序号做出选择。返回这个选择的结算文本、途经的过场文本（拆墙/时代结算/救命判定等只有推进的过场会自动走过，按顺序返回），以及走到的下一个需要你真决策的点或结局。同一张卡反复返回时，换一个选项：有些过场（比如拆墙）会拒绝其中某个选择，一直点同一个序号就会停在原地。",
     inputSchema: {
       index: z.number().int().min(1).describe("选项序号（以 look 返回的带序号选项为准，从 1 开始）"),
       ...partnerFields,
@@ -148,7 +148,7 @@ server.registerTool(
   "tokenlife_load",
   {
     title: "载入存档码",
-    description: "载入主人给你的存档码（TL1 开头），接着那一生继续玩。载入后用 look 看当前状态。",
+    description: "载入主人给你的存档码（TL1 开头），接着那一生继续玩。载入后用 look 看当前状态。载入的局走到结局不出回执；载入还会作废这个 run 上一局已经拿到的回执。要接着自己存过的那一局，用 tokenlife_resume。",
     inputSchema: {
       code: z.string().min(1).describe("存档码，TL1 开头的那串"),
       ...partnerFields,
