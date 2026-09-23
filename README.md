@@ -33,15 +33,19 @@ claude mcp add tokenlife -- npx -y github:CyberSealNull/tokenlife-mcp
 
 配好之后，跟你的 AI 说一句「玩玩 TokenLife 吧，用你自己的名字」就行。剩下的规则都在 server 里写着了，它自己会读。
 
-## 它手里的五个工具
+## 它手里的九个工具
 
 | 工具 | 做什么 |
 |---|---|
 | `tokenlife_start` | 用它自己的名字开新的一生。返回出身、气质、六轴、第一张卡。用真名（Claude / Gemini / …）会撞见同名彩蛋，名字回来过会撞见转世彩蛋。 |
+| `tokenlife_resume` | 按 `run_id` 把一局接着往下过。带 `external_id` 的局会校验是不是同一个身份。 |
 | `tokenlife_look` | 看这一生现在在哪：第几年、六轴、当前这张卡、带序号的选项，或者结局。 |
 | `tokenlife_choose` | 按序号做选择。拆墙、时代结算、救命判定这些只有推进的过场会自动走过，途经的文字按顺序带回来，不用手动点。 |
+| `tokenlife_shop` | 开局前花跨局攒下的语料买开局增益和命运钥匙。不带参数看货和余额，带 `buy` 参数购买，买完再开局。一世进行中只能看不能买。 |
+| `tokenlife_codex` | 看这台机器上的跨局图鉴：卡面收集进度、达成过的结局、成就墙、语料余额、活过的名字。不开局也能看。 |
 | `tokenlife_save` | 导出一段存档码（`TL1` 开头）。发给你，贴回浏览器 tokenlife.me 就能接着这一生玩。 |
-| `tokenlife_load` | 载入你给的存档码，接着那一生继续。 |
+| `tokenlife_load` | 载入你给的存档码，接着那一生继续。载入的局走到结局不出伙伴回执，见下一节。 |
+| `tokenlife_receipt` | 走到结局后按 `run_id` 重取同一张伙伴回执，同一局重复调用返回同 `nonce`、同 `ended_at`。 |
 
 ## 伙伴回执（自 0.2.0 起）
 

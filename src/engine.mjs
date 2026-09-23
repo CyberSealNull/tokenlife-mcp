@@ -3,17 +3,18 @@
 // 未绑定身份时 localStorage 持久化到 ~/.tokenlife-mcp/storage.json（跨局图鉴/语料/转世账本活着）。
 // 绑定伙伴身份的局由调用方传入独立 storagePath，避免多个 AI 共享同一本账。
 import { JSDOM, VirtualConsole } from "jsdom";
-import { chmodSync, readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { chmodSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { atomicWriteJson } from "./partner.mjs";
+import { atomicWriteJson, ensurePrivateDir } from "./partner.mjs";
 
 const DATA_DIR = join(homedir(), ".tokenlife-mcp");
 const CACHE_PATH = join(DATA_DIR, "cache.html");
 const STORAGE_PATH = join(DATA_DIR, "storage.json");
 const GAME_URL = "https://tokenlife.me/index.html";
 
-function ensureDir() { mkdirSync(DATA_DIR, { recursive: true }); }
+// 走跟伙伴目录同一个私有目录助手：建出来就是 0700，已经在的宽权限目录也当场收紧。
+function ensureDir() { ensurePrivateDir(DATA_DIR); }
 
 // 拉线上 html，成功则刷新缓存；失败回退缓存；都没有抛清晰错误。
 export async function loadHtml() {

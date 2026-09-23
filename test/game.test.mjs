@@ -266,6 +266,36 @@ test("cache.html is written 0600 whether or not it already exists", async () => 
   }
 });
 
+test("the data dir is created 0700 whether or not it already exists", async () => {
+  const bigHtml = `<html><body>newGame tokenlife ${"x".repeat(60000)}</body></html>`;
+  const tempHome = join(tmpdir(), `tokenlife-mcp-dirperm-${process.pid}-${Date.now()}`);
+  // 只建 HOME，故意不建 .tokenlife-mcp，让首次运行自己去建。
+  mkdirSync(tempHome, { recursive: true });
+  const oldHome = process.env.HOME;
+  const oldFetch = globalThis.fetch;
+  process.env.HOME = tempHome;
+  globalThis.fetch = async () => ({ ok: true, text: async () => bigHtml });
+  try {
+    const { loadHtml, DATA_DIR } = await import(`../src/engine.mjs?dirperm=${Date.now()}-${++importCase}`);
+
+    // 形状一：目录还不存在，首次运行现建。这是那段 0755 窗口的入口。
+    assert.equal(existsSync(DATA_DIR), false);
+    assert.equal((await loadHtml()).source, "live");
+    assert.equal(statSync(DATA_DIR).mode & 0o777, 0o700);
+
+    // 形状二：目录已经在，权限是松的。mkdirSync 的 mode 对已存在目录不生效，
+    // 跟 cache.html 那条同族，只有显式 chmod 才收得回来。
+    chmodSync(DATA_DIR, 0o755);
+    assert.equal(statSync(DATA_DIR).mode & 0o777, 0o755);
+    assert.equal((await loadHtml()).source, "live");
+    assert.equal(statSync(DATA_DIR).mode & 0o777, 0o700);
+  } finally {
+    globalThis.fetch = oldFetch;
+    if (oldHome === undefined) delete process.env.HOME;
+    else process.env.HOME = oldHome;
+  }
+});
+
 test("partner external_id uses isolated storage files", async () => {
   const loaded = await loadGameWithTempHome();
   const { TokenLifeGame, oldEnv } = loaded;
