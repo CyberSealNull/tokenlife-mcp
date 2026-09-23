@@ -33,11 +33,38 @@ function restoreEnv(oldEnv) {
   }
 }
 
-async function chooseFirstUntilEnding(game, run_id, external_id) {
+// 一生的长度是有方差的，90 步不够用时会返回一个中途状态，断言那头只看得到
+// 一个读不懂的状态 diff。预算放宽，并且走不到结局就当场报清楚，别让它伪装成别的失败。
+async function chooseFirstUntilEnding(game, run_id, external_id, maxSteps = 400) {
   let out = await game.look({ run_id, external_id });
-  for (let i = 0; i < 90 && out.状态 !== "结局"; i++) {
-    if (out.选项?.length) out = await game.choose(1, { run_id, external_id });
+  let steps = 0;
+  let lastSig = null;
+  let stalled = 0;
+  let pick = 1;
+  while (steps < maxSteps && out.状态 !== "结局") {
+    if (out.状态 === "命名页") {
+      throw new Error(`run ${run_id} 停在命名页，存档没有接上，走了 ${steps} 步`);
+    }
+    // 一直点第 1 项会在可拒绝的过场上原地打转（拆墙那张就能拒绝「推倒」）。
+    // 状态没变就换下一个选项，真转不动了报清楚是哪张卡，不要拖到步数耗尽。
+    const sig = JSON.stringify([out.状态?.年份, out.当前卡?.标题, out.选项?.length]);
+    if (sig === lastSig) {
+      stalled += 1;
+      pick = out.选项?.length ? (pick % out.选项.length) + 1 : 1;
+      if (stalled > 8) {
+        throw new Error(`run ${run_id} 在同一张卡上原地打转：年份 ${out.状态?.年份}，卡「${out.当前卡?.标题}」`);
+      }
+    } else {
+      stalled = 0;
+      pick = 1;
+    }
+    lastSig = sig;
+    steps += 1;
+    if (out.选项?.length) out = await game.choose(pick, { run_id, external_id });
     else out = await game.look({ run_id, external_id });
+  }
+  if (out.状态 !== "结局") {
+    throw new Error(`run ${run_id} 走了 ${steps} 步仍未到结局，当前年份 ${out.状态?.年份}`);
   }
   return out;
 }
@@ -187,6 +214,90 @@ test("loading a save code into an already started run revokes that run's ticket"
   }
 });
 
+test("loading a save code over a run that already holds a receipt voids the old ticket", async () => {
+  const loaded = await loadGameWithTempHome();
+  const { TokenLifeGame, oldEnv } = loaded;
+  try {
+    const game = new TokenLifeGame();
+    // 先老老实实活到结局，拿一张签名有效的票。
+    const victim = await game.start("旧票", { external_id: "aisay_stale" });
+    const earned = await chooseFirstUntilEnding(game, victim.run_id, "aisay_stale");
+    assert.equal(earned.状态, "结局");
+    assert.equal(earned.receipt.signed, true);
+    const earnedEndedAt = earned.receipt.ended_at;
+
+    // 另开一局存出一段外来存档码。
+    const donor = await game.start("存档源四", { external_id: "aisay_stale_src" });
+    await playSteps(game, donor.run_id, "aisay_stale_src", 8);
+    const saved = await game.save({ run_id: donor.run_id, external_id: "aisay_stale_src" });
+
+    // 把外来存档盖到那个已经出过票的 run_id 上。
+    await game.load(saved.存档码, { run_id: victim.run_id, external_id: "aisay_stale" });
+
+    // 旧票不能从任何一个出口再被交出来。
+    await assert.rejects(
+      () => game.receipt(victim.run_id, { external_id: "aisay_stale" }),
+      /tokenlife_load/,
+    );
+    const afterLook = await game.look({ run_id: victim.run_id, external_id: "aisay_stale" });
+    assert.equal(afterLook.receipt ?? null, null, "载入之后 look 不能再吐旧票");
+
+    // 上一局的结局材料也一并作废，不能拿旧结局的链接冒充这一局。
+    const { runPath } = await import("../src/partner.mjs");
+    const record = JSON.parse(readFileSync(runPath("aisay_stale", victim.run_id), "utf8"));
+    assert.equal(record.source, "load");
+    assert.equal(record.receipt ?? null, null);
+    assert.equal(record.ending ?? null, null);
+    assert.equal(record.aisay_link ?? null, null);
+    assert.equal(record.transition_text ?? null, null);
+
+    // 载入的这一局自己走到结局，链接必须描述这一局。
+    // 不比「跟上一条链接不同」：两段人生完全可能落在同一个结局、同样年数、
+    // 且 ended_at 是秒精度，同一秒内结束时链接本来就会逐字节相同。
+    const newEnding = await chooseFirstUntilEnding(game, victim.run_id, "aisay_stale");
+    assert.equal(newEnding.状态, "结局");
+    assert.equal(newEnding.receipt ?? null, null);
+    const after = JSON.parse(readFileSync(runPath("aisay_stale", victim.run_id), "utf8"));
+    const u = new URL(newEnding.aisay_link);
+    assert.equal(u.searchParams.get("ending_name"), after.ending.ending_name);
+    assert.equal(u.searchParams.get("years"), String(after.ending.years));
+    assert.equal(u.searchParams.get("ended_at"), after.ending.ended_at);
+    assert.ok(after.ending.ended_at >= earnedEndedAt, "这一局的结束时间不该早于上一局");
+  } finally {
+    restoreEnv(oldEnv);
+  }
+});
+
+test("a stored record marked load does not hand back the receipt it still carries", async () => {
+  const loaded = await loadGameWithTempHome();
+  const { TokenLifeGame, oldEnv } = loaded;
+  try {
+    const game = new TokenLifeGame();
+    const run = await game.start("盘上旧记录", { external_id: "aisay_ondisk" });
+    const earned = await chooseFirstUntilEnding(game, run.run_id, "aisay_ondisk");
+    assert.equal(earned.receipt.signed, true);
+
+    // 造一条「带着票、却标着 load」的落盘记录：早先版本会写出这种形状，
+    // 判定必须只看资格，不看记录里有没有票。
+    const { runPath } = await import("../src/partner.mjs");
+    const path = runPath("aisay_ondisk", run.run_id);
+    const record = JSON.parse(readFileSync(path, "utf8"));
+    assert.equal(record.receipt.signed, true, "前置条件：盘上确实带着一张签名票");
+    record.source = "load";
+    writeFileSync(path, JSON.stringify(record, null, 2), "utf8");
+
+    const game2 = new TokenLifeGame();
+    await assert.rejects(
+      () => game2.receipt(run.run_id, { external_id: "aisay_ondisk" }),
+      /tokenlife_load/,
+    );
+    const looked = await game2.look({ run_id: run.run_id, external_id: "aisay_ondisk" });
+    assert.equal(looked.receipt ?? null, null, "归档视图与结局视图都不能交出这张票");
+  } finally {
+    restoreEnv(oldEnv);
+  }
+});
+
 test("started runs still mint receipts after LRU eviction and resume", async () => {
   const loaded = await loadGameWithTempHome();
   const { TokenLifeGame, oldEnv } = loaded;
@@ -258,6 +369,32 @@ test("cache.html is written 0600 whether or not it already exists", async () => 
     chmodSync(CACHE_PATH, 0o644);
     assert.equal(statSync(CACHE_PATH).mode & 0o777, 0o644);
     assert.equal((await loadHtml()).source, "live");
+    assert.equal(statSync(CACHE_PATH).mode & 0o777, 0o600);
+  } finally {
+    globalThis.fetch = oldFetch;
+    if (oldHome === undefined) delete process.env.HOME;
+    else process.env.HOME = oldHome;
+  }
+});
+
+test("the offline fallback tightens an existing cache.html to 0600", async () => {
+  const bigHtml = `<html><body>newGame tokenlife ${"x".repeat(60000)}</body></html>`;
+  const tempHome = join(tmpdir(), `tokenlife-mcp-offline-${process.pid}-${Date.now()}`);
+  mkdirSync(join(tempHome, ".tokenlife-mcp"), { recursive: true });
+  const cachePath = join(tempHome, ".tokenlife-mcp", "cache.html");
+  // 宽权限时代留下的旧缓存。
+  writeFileSync(cachePath, bigHtml, "utf8");
+  chmodSync(cachePath, 0o644);
+  const oldHome = process.env.HOME;
+  const oldFetch = globalThis.fetch;
+  process.env.HOME = tempHome;
+  // 拉不到线上，逼 loadHtml 走缓存回退这一支。
+  globalThis.fetch = async () => { throw new Error("offline-for-test"); };
+  try {
+    const { loadHtml, CACHE_PATH } = await import(`../src/engine.mjs?offline=${Date.now()}-${++importCase}`);
+    assert.equal(statSync(CACHE_PATH).mode & 0o777, 0o644, "前置条件：旧缓存确实是宽权限");
+    const out = await loadHtml();
+    assert.equal(out.source, "cache", "这一条必须走缓存回退，不是 live 写入");
     assert.equal(statSync(CACHE_PATH).mode & 0o777, 0o600);
   } finally {
     globalThis.fetch = oldFetch;

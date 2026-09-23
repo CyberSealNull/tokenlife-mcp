@@ -42,6 +42,8 @@ export async function loadHtml() {
     liveErr = e && e.name === "AbortError" ? "请求超时" : (e && e.message) || String(e);
   }
   if (existsSync(CACHE_PATH)) {
+    // 回退到旧缓存也要收紧：宽权限时代留下的文件不会因为这次只读不写就没事。
+    chmodSync(CACHE_PATH, 0o600);
     return { html: readFileSync(CACHE_PATH, "utf8"), source: "cache", liveErr };
   }
   throw new Error(

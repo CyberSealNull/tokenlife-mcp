@@ -266,6 +266,12 @@ class TokenLifeRun {
     return this.record.source === "start";
   }
 
+  // 唯一的出票口径：能不能交出一张票只看资格，不看记录里躺着什么。
+  // 所有对外交票的出口都走这里，免得某个出口自己另有一套判断。
+  issuedReceipt() {
+    return this.receiptEligible() ? (this.record.receipt || null) : null;
+  }
+
   attachPartnerEnding(out, ending) {
     if (!this.externalId) return out;
     if (!this.record.ending) {
@@ -303,8 +309,9 @@ class TokenLifeRun {
       }
       this.persist();
     }
-    out.receipt = this.record.receipt || null;
-    if (!this.record.receipt) out.receipt_declined_reason = RECEIPT_DECLINED_LOADED;
+    const issued = this.issuedReceipt();
+    out.receipt = issued;
+    if (!issued) out.receipt_declined_reason = RECEIPT_DECLINED_LOADED;
     out.aisay_link = this.record.aisay_link;
     out.transition_text = this.record.transition_text;
     return out;
@@ -334,7 +341,7 @@ class TokenLifeRun {
 
   look() {
     this.ensure();
-    if (this.record.receipt && !this.isEnding()) return this.archivedReceiptView();
+    if (this.issuedReceipt() && !this.isEnding()) return this.archivedReceiptView();
     const passed = this.autoAdvance();
     return this.view(passed);
   }
@@ -345,7 +352,7 @@ class TokenLifeRun {
       状态: "结局",
       结局: this.record.ending?.ending_name,
       活了: Number.isInteger(this.record.ending?.years) ? `${this.record.ending.years} 年` : undefined,
-      receipt: this.record.receipt,
+      receipt: this.issuedReceipt(),
       aisay_link: this.record.aisay_link,
       transition_text: this.record.transition_text,
       备注: "这一局已归档结局回执，游戏页面自身无法恢复到结局页，但回执保持不变。",
@@ -442,6 +449,12 @@ class TokenLifeRun {
     // 标记打在这里，不打在 importSaveCode 里：那个函数也负责把自己存的局重新拉起来
     // （init 里按 record.save_code 重建、LRU 淘汰后恢复都走它），打在那儿会误伤自己的局。
     this.record.source = "load";
+    // 载入外来存档等于把这一局换成了另一段人生：上一局的票和结局材料一并作废。
+    // 不清的话，旧票会跟着同一个 run_id 被再取出来，旧结局的链接也会冒充这一局。
+    this.record.receipt = null;
+    this.record.ending = null;
+    this.record.aisay_link = null;
+    this.record.transition_text = null;
     this.importSaveCode(code);
     this._started = true;
     this.persist();
@@ -450,10 +463,12 @@ class TokenLifeRun {
   }
 
   receipt() {
-    if (this.record.receipt) {
+    // 早退也要先过资格：记录里躺着一张票不等于这一局还有资格交出它。
+    const issued = this.issuedReceipt();
+    if (issued) {
       return {
         run_id: this.runId,
-        receipt: this.record.receipt,
+        receipt: issued,
         aisay_link: this.record.aisay_link,
         transition_text: this.record.transition_text,
       };
@@ -466,7 +481,7 @@ class TokenLifeRun {
     if (!this.record.receipt) this.attachPartnerEnding({}, this.readEnding());
     return {
       run_id: this.runId,
-      receipt: this.record.receipt,
+      receipt: this.issuedReceipt(),
       aisay_link: this.record.aisay_link,
       transition_text: this.record.transition_text,
     };
