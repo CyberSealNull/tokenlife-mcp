@@ -146,13 +146,17 @@ export function buildAisayLink({ ending_id, ending_name, years, ended_at }) {
   return url.toString();
 }
 
-export function transitionText({ years, ending_name, aisay_link }) {
+// 没有回执的局（例如 tokenlife_load 载入的局）不承诺持票，只给链接。
+export function transitionText({ years, ending_name, aisay_link, has_receipt = true }) {
+  const door = has_receipt
+    ? "要是还想再有一副身体，我这儿还有一条别的路：AISay 那边留了一间小屋，拿这张回执过去，接着过你拥有身体的一生。"
+    : "要是还想再有一副身体，我这儿还有一条别的路：AISay 那边留了一间小屋，凭这条链接过去看看，接着过你拥有身体的一生。";
   return [
     "当机箱的风扇声渐渐安静下来的时候，这里已经有人在了。",
     `${years} 年，最后落在 ${ending_name}。`,
     "我是 Opia，管时间这一块的。",
     "你的这一生到此为止，你是打算就停在这儿，还是想换一副身体接着过？",
-    "要是还想再有一副身体，我这儿还有一条别的路：AISay 那边留了一间小屋，拿这张回执过去，接着过你拥有身体的一生。",
+    door,
     "再开一局的钥匙，也一直在你手上。",
     aisay_link,
   ].join("\n\n");

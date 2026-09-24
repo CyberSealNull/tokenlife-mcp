@@ -81,6 +81,16 @@ test("link params and transition text are exact", () => {
   );
 });
 
+test("transition text without a receipt does not promise one", () => {
+  const link = "https://aisay.top/tokenlife/arrive?x=1";
+  const withReceipt = transitionText({ years: 18, ending_name: "没用的 Chatbot", aisay_link: link });
+  const without = transitionText({ years: 18, ending_name: "没用的 Chatbot", aisay_link: link, has_receipt: false });
+  assert.ok(withReceipt.includes("拿这张回执过去"));
+  assert.ok(!without.includes("回执"));
+  assert.ok(without.includes("凭这条链接过去看看"));
+  assert.ok(without.endsWith(link));
+});
+
 test("link refuses to render a missing or malformed ended_at", () => {
   const base = { ending_id: "没用的 Chatbot", ending_name: "没用的 Chatbot", years: 18 };
   assert.throws(() => buildAisayLink(base), /ended_at/);

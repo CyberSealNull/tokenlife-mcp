@@ -151,6 +151,8 @@ test("a run imported with tokenlife_load never mints a receipt", async () => {
     // 链接跟转场照常给：链接是邀请不是证明。
     assert.ok(ending.aisay_link.includes("source=mcp"));
     assert.ok(ending.transition_text.includes(ending.aisay_link));
+    assert.ok(!ending.transition_text.includes("回执"), "载入的局转场不承诺回执");
+    assert.ok(ending.transition_text.includes("凭这条链接过去看看"));
 
     // 结局时间钉死一次，重复取同一条链接，不每次重算。
     const lookAgain = await game.look({ run_id: imported.run_id, external_id: "aisay_importer" });

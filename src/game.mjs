@@ -295,6 +295,7 @@ class TokenLifeRun {
         years,
         ending_name: ending.ending_name,
         aisay_link: this.record.aisay_link,
+        has_receipt: this.receiptEligible(),
       });
       if (this.receiptEligible()) {
         this.record.receipt = makeReceipt({
